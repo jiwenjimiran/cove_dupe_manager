@@ -1,0 +1,65 @@
+name: Build and Release Extension
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  NODE_VERSION: '24.x'
+  EXTENSION_PROJECT: src/DuplicateManager/DuplicateManager.csproj
+  EXTENSION_ID: io.github.jiwenjimiran.duplicate-manager
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build and test frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Build extension
+        run: dotnet build ${{ env.EXTENSION_PROJECT }} -c Release -p:UseLocalCovePlugins=false
+      - name: Publish extension
+        run: dotnet publish ${{ env.EXTENSION_PROJECT }} -c Release -o artifacts/extension --no-build -p:UseLocalCovePlugins=false
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=1.9.0" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Package
+        shell: bash
+        run: |
+          cd artifacts/extension
+          zip -r ../../${{ env.EXTENSION_ID }}-${{ steps.version.outputs.value }}.zip .
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.EXTENSION_ID }}-${{ steps.version.outputs.value }}
+          path: ${{ env.EXTENSION_ID }}-${{ steps.version.outputs.value }}.zip
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: '${{ env.EXTENSION_ID }}-*.zip'
+          generate_release_notes: true
