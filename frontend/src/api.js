@@ -112,15 +112,38 @@ export function loadTranscodeResolutions(videoId) {
   return request(`/api/stream/video/${videoId}/resolutions`);
 }
 
+function mediaUrl(path, params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  }
+
+  let shareToken = null;
+  let sharePassword = null;
+  let accessToken = null;
+  try {
+    shareToken = sessionStorage.getItem("cove_share_token");
+    sharePassword = sessionStorage.getItem("cove_share_password");
+    accessToken = localStorage.getItem("cove_access_token");
+  } catch { /* Storage can be unavailable in restricted browser contexts. */ }
+
+  if (shareToken) {
+    query.set("share_token", shareToken);
+    if (sharePassword) query.set("share_password", sharePassword);
+  } else if (accessToken) {
+    query.set("access_token", accessToken);
+  }
+
+  const suffix = query.toString();
+  return `${path}${suffix ? `?${suffix}` : ""}`;
+}
+
 export const mediaUrls = {
-  screenshot: (id, version) => `/api/stream/video/${id}/screenshot${version ? `?v=${encodeURIComponent(version)}` : ""}`,
-  preview: (id) => `/api/stream/video/${id}/preview`,
-  stream: (id) => `/api/stream/video/${id}`,
-  transcode: (id, start = 0, resolution) => {
-    const params = new URLSearchParams();
-    if (resolution) params.set("resolution", resolution);
-    if (Number(start) > 0) params.set("start", String(start));
-    const query = params.toString();
-    return `/api/stream/video/${id}/transcode${query ? `?${query}` : ""}`;
-  },
+  screenshot: (id, version) => mediaUrl(`/api/stream/video/${id}/screenshot`, { v: version }),
+  preview: (id) => mediaUrl(`/api/stream/video/${id}/preview`),
+  stream: (id) => mediaUrl(`/api/stream/video/${id}`),
+  transcode: (id, start = 0, resolution) => mediaUrl(`/api/stream/video/${id}/transcode`, {
+    resolution,
+    start: Number(start) > 0 ? start : undefined,
+  }),
 };

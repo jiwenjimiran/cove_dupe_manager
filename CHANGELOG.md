@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.2 - 2026-07-29
+
+- Authenticate comparison, preview, and screenshot media URLs using Cove's access-token or share-session query parameters.
+- Prevent authenticated transcode requests from being masked as missing-video `404` responses.
+
 ## 1.9.1 - 2026-07-29
 
 - Retry failed comparison transcodes at source resolution and lower Cove profiles before reporting an FFmpeg failure.

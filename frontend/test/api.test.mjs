@@ -8,6 +8,33 @@ test("comparison transcode URLs use Cove's FFmpeg endpoint and absolute start", 
   assert.equal(mediaUrls.transcode(42, 91.5, "480p"), "/api/stream/video/42/transcode?resolution=480p&start=91.5");
 });
 
+test("media URLs include Cove access-token authentication", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = { getItem: (key) => key === "cove_access_token" ? "access token" : null };
+  globalThis.sessionStorage = { getItem: () => null };
+  try {
+    assert.equal(mediaUrls.stream(42), "/api/stream/video/42?access_token=access+token");
+    assert.equal(mediaUrls.transcode(42, 3, "480p"), "/api/stream/video/42/transcode?resolution=480p&start=3&access_token=access+token");
+  } finally {
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+});
+
+test("media URLs prefer Cove share credentials over an access token", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = { getItem: () => "ignored-access-token" };
+  globalThis.sessionStorage = { getItem: (key) => ({ cove_share_token: "share/token", cove_share_password: "secret value" })[key] || null };
+  try {
+    assert.equal(mediaUrls.preview(42), "/api/stream/video/42/preview?share_token=share%2Ftoken&share_password=secret+value");
+  } finally {
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+});
+
 test("comparison loads Cove's configured transcode resolutions", async () => {
   let requestedPath = null;
   const originalFetch = globalThis.fetch;
