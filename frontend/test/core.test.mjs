@@ -17,6 +17,7 @@ import {
   phashComparison,
   prepareGroups,
   selectedSummary,
+  transcodeResolutionCandidates,
   validateKeeperSafety,
 } from "../src/core.js";
 
@@ -92,6 +93,11 @@ test("comparison playback follows Cove's container and audio compatibility polic
   assert.equal(comparisonPlayback(video(7, { format: "avi", codec: "mpeg4" })).transcode, true);
   assert.equal(comparisonPlayback(video(8, { format: "mov", codec: "h264" })).transcode, false);
   assert.equal(comparisonPlayback({ files: [{ path: "source-without-extension", videoCodec: "wmv3" }] }).transcode, false);
+});
+
+test("comparison retries failed transcodes without scaling before lower profiles", () => {
+  assert.deepEqual(transcodeResolutionCandidates(["240p", "480p", "720p"]), ["720p", null, "480p", "240p"]);
+  assert.deepEqual(transcodeResolutionCandidates([]), [null]);
 });
 
 test("display paths are limited to 144 characters", () => {

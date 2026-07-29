@@ -127,6 +127,12 @@ function comparisonPlayback(video) {
     codec
   };
 }
+function transcodeResolutionCandidates(values) {
+  const resolutions = uniqueStrings(values, []);
+  if (resolutions.length === 0) return [null];
+  const descending = [...resolutions].reverse();
+  return [descending[0], null, ...descending.slice(1)];
+}
 function prepareGroups(apiGroups, options) {
   const settings = normalizeSettings(options);
   const paths = settings.includedPaths.map(normalizePath).filter(Boolean);
@@ -880,8 +886,8 @@ function CompareDialog({ group, matchSettings, selectedIds, onToggle, onClose })
   const [rightReady, setRightReady] = useState(false);
   const [leftForceTranscode, setLeftForceTranscode] = useState(false);
   const [rightForceTranscode, setRightForceTranscode] = useState(false);
-  const [leftResolution, setLeftResolution] = useState({ videoId: null, ready: false, value: null });
-  const [rightResolution, setRightResolution] = useState({ videoId: null, ready: false, value: null });
+  const [leftResolution, setLeftResolution] = useState({ videoId: null, ready: false, candidates: [], attempt: 0 });
+  const [rightResolution, setRightResolution] = useState({ videoId: null, ready: false, candidates: [], attempt: 0 });
   const [pendingPlay, setPendingPlay] = useState(false);
   const [seeking, setSeeking] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
@@ -899,8 +905,10 @@ function CompareDialog({ group, matchSettings, selectedIds, onToggle, onClose })
   const rightPlayback = { ...rightPlaybackBase, transcode: rightPlaybackBase.transcode || rightForceTranscode };
   const leftResolutionReady = leftResolution.videoId === left.id && leftResolution.ready;
   const rightResolutionReady = rightResolution.videoId === right.id && rightResolution.ready;
-  const leftSource = leftPlayback.transcode ? leftTranscodeActive && leftResolutionReady ? mediaUrls.transcode(left.id, leftStart, leftResolution.value) : null : mediaUrls.stream(left.id);
-  const rightSource = rightPlayback.transcode ? rightTranscodeActive && rightResolutionReady ? mediaUrls.transcode(right.id, rightStart, rightResolution.value) : null : mediaUrls.stream(right.id);
+  const leftResolutionValue = leftResolution.candidates[leftResolution.attempt] ?? null;
+  const rightResolutionValue = rightResolution.candidates[rightResolution.attempt] ?? null;
+  const leftSource = leftPlayback.transcode ? leftTranscodeActive && leftResolutionReady ? mediaUrls.transcode(left.id, leftStart, leftResolutionValue) : null : mediaUrls.stream(left.id);
+  const rightSource = rightPlayback.transcode ? rightTranscodeActive && rightResolutionReady ? mediaUrls.transcode(right.id, rightStart, rightResolutionValue) : null : mediaUrls.stream(right.id);
   const duration = Math.min(Number(primaryFile(left)?.duration || 0), Number(primaryFile(right)?.duration || 0));
   function pauseBoth() {
     const a = leftRef.current;
@@ -1056,6 +1064,26 @@ function CompareDialog({ group, matchSettings, selectedIds, onToggle, onClose })
       }
       return;
     }
+    const resolution = isLeft ? leftResolution : rightResolution;
+    if (resolution.attempt + 1 < resolution.candidates.length) {
+      const resume = playing || pendingPlay;
+      playRequestRef.current++;
+      pauseBoth();
+      setPlaying(false);
+      setPendingPlay(resume);
+      setTime(absolute);
+      setPlaybackError("");
+      if (isLeft) {
+        setLeftReady(false);
+        setLeftResolution((current) => ({ ...current, attempt: current.attempt + 1 }));
+        setLeftSourceEpoch((value) => value + 1);
+      } else {
+        setRightReady(false);
+        setRightResolution((current) => ({ ...current, attempt: current.attempt + 1 }));
+        setRightSourceEpoch((value) => value + 1);
+      }
+      return;
+    }
     pause();
     setPlaybackError(`Video ${isLeft ? "A" : "B"} could not be transcoded. Check Cove's FFmpeg settings.`);
   }
@@ -1091,11 +1119,11 @@ function CompareDialog({ group, matchSettings, selectedIds, onToggle, onClose })
   useEffect(() => {
     if (!leftPlayback.transcode) return;
     let cancelled = false;
-    setLeftResolution({ videoId: left.id, ready: false, value: null });
+    setLeftResolution({ videoId: left.id, ready: false, candidates: [], attempt: 0 });
     loadTranscodeResolutions(left.id).then((values) => {
-      if (!cancelled) setLeftResolution({ videoId: left.id, ready: true, value: values?.at(-1) || null });
+      if (!cancelled) setLeftResolution({ videoId: left.id, ready: true, candidates: transcodeResolutionCandidates(values), attempt: 0 });
     }).catch(() => {
-      if (!cancelled) setLeftResolution({ videoId: left.id, ready: true, value: null });
+      if (!cancelled) setLeftResolution({ videoId: left.id, ready: true, candidates: [null], attempt: 0 });
     });
     return () => {
       cancelled = true;
@@ -1104,11 +1132,11 @@ function CompareDialog({ group, matchSettings, selectedIds, onToggle, onClose })
   useEffect(() => {
     if (!rightPlayback.transcode) return;
     let cancelled = false;
-    setRightResolution({ videoId: right.id, ready: false, value: null });
+    setRightResolution({ videoId: right.id, ready: false, candidates: [], attempt: 0 });
     loadTranscodeResolutions(right.id).then((values) => {
-      if (!cancelled) setRightResolution({ videoId: right.id, ready: true, value: values?.at(-1) || null });
+      if (!cancelled) setRightResolution({ videoId: right.id, ready: true, candidates: transcodeResolutionCandidates(values), attempt: 0 });
     }).catch(() => {
-      if (!cancelled) setRightResolution({ videoId: right.id, ready: true, value: null });
+      if (!cancelled) setRightResolution({ videoId: right.id, ready: true, candidates: [null], attempt: 0 });
     });
     return () => {
       cancelled = true;
@@ -1157,7 +1185,7 @@ function CompareDialog({ group, matchSettings, selectedIds, onToggle, onClose })
     setRightTranscodeActive(false);
     setRightForceTranscode(false);
     setRightId(Number(event.target.value));
-  } }, group.filter((video) => video.id !== left.id).map((video) => /* @__PURE__ */ React.createElement("option", { key: video.id, value: video.id }, video.title || primaryFile(video)?.basename || `Video #${video.id}`))))), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-stage", ref: stageRef }, /* @__PURE__ */ React.createElement("video", { key: `${left.id}-${leftPlayback.transcode ? `${leftStart}-${leftResolution.value || "source"}-${leftSourceEpoch}` : "direct"}`, ref: leftRef, src: leftSource || void 0, muted: true, playsInline: true, preload: leftPlayback.transcode ? "auto" : "metadata", onCanPlay: () => setLeftReady(true), onWaiting: () => markWaiting("left"), onTimeUpdate: handleLeftTimeUpdate, onError: () => handleMediaError("left"), onEnded: () => pause() }), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-overlay", style: { clipPath: `inset(0 0 0 ${wipe}%)` } }, /* @__PURE__ */ React.createElement("video", { key: `${right.id}-${rightPlayback.transcode ? `${rightStart}-${rightResolution.value || "source"}-${rightSourceEpoch}` : "direct"}`, ref: rightRef, src: rightSource || void 0, muted: true, playsInline: true, preload: rightPlayback.transcode ? "auto" : "metadata", onCanPlay: () => setRightReady(true), onWaiting: () => markWaiting("right"), onError: () => handleMediaError("right") })), /* @__PURE__ */ React.createElement("span", { className: "dm-label-a" }, "A"), /* @__PURE__ */ React.createElement("span", { className: "dm-label-b" }, "B"), /* @__PURE__ */ React.createElement("button", { className: "dm-wipe-handle", "aria-label": "Drag to compare videos", title: "Drag to compare", style: { left: `${wipe}%` }, onPointerDown: startWipe, onPointerMove: (event) => event.currentTarget.hasPointerCapture(event.pointerId) && moveWipe(event) }, /* @__PURE__ */ React.createElement("span", null))), playbackError && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 16 }), /* @__PURE__ */ React.createElement("span", null, playbackError)), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-controls" }, /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: seeking, onClick: () => playing || pendingPlay ? pause() : requestPlay() }, playing ? /* @__PURE__ */ React.createElement(Pause, { size: 18 }) : pendingPlay || seeking ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 18 }) : /* @__PURE__ */ React.createElement(Play, { size: 18 })), /* @__PURE__ */ React.createElement("span", null, formatDuration(time)), /* @__PURE__ */ React.createElement("input", { type: "range", min: "0", max: Math.max(duration, 1), step: "0.1", value: Math.min(time, duration || 1), onChange: (event) => seek(event.target.value) }), /* @__PURE__ */ React.createElement("span", null, formatDuration(duration)), seeking ? /* @__PURE__ */ React.createElement("span", null, "Setting seek point") : pendingPlay && (!leftReady || !rightReady) && /* @__PURE__ */ React.createElement("span", null, "Preparing playback")), matchSettings.matchType === "phash" && /* @__PURE__ */ React.createElement("div", { className: "dm-compare-phash" }, /* @__PURE__ */ React.createElement(PhashSummary, { left, right, threshold: matchSettings.phashDistance })), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-details" }, /* @__PURE__ */ React.createElement(CompareDetails, { label: "A", video: left, selected: selectedIds.has(left.id), onToggle: () => onToggle(left.id) }), /* @__PURE__ */ React.createElement(CompareDetails, { label: "B", video: right, selected: selectedIds.has(right.id), onToggle: () => onToggle(right.id) })));
+  } }, group.filter((video) => video.id !== left.id).map((video) => /* @__PURE__ */ React.createElement("option", { key: video.id, value: video.id }, video.title || primaryFile(video)?.basename || `Video #${video.id}`))))), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-stage", ref: stageRef }, /* @__PURE__ */ React.createElement("video", { key: `${left.id}-${leftPlayback.transcode ? `${leftStart}-${leftResolutionValue || "source"}-${leftSourceEpoch}` : "direct"}`, ref: leftRef, src: leftSource || void 0, muted: true, playsInline: true, preload: leftPlayback.transcode ? "auto" : "metadata", onCanPlay: () => setLeftReady(true), onWaiting: () => markWaiting("left"), onTimeUpdate: handleLeftTimeUpdate, onError: () => handleMediaError("left"), onEnded: () => pause() }), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-overlay", style: { clipPath: `inset(0 0 0 ${wipe}%)` } }, /* @__PURE__ */ React.createElement("video", { key: `${right.id}-${rightPlayback.transcode ? `${rightStart}-${rightResolutionValue || "source"}-${rightSourceEpoch}` : "direct"}`, ref: rightRef, src: rightSource || void 0, muted: true, playsInline: true, preload: rightPlayback.transcode ? "auto" : "metadata", onCanPlay: () => setRightReady(true), onWaiting: () => markWaiting("right"), onError: () => handleMediaError("right") })), /* @__PURE__ */ React.createElement("span", { className: "dm-label-a" }, "A"), /* @__PURE__ */ React.createElement("span", { className: "dm-label-b" }, "B"), /* @__PURE__ */ React.createElement("button", { className: "dm-wipe-handle", "aria-label": "Drag to compare videos", title: "Drag to compare", style: { left: `${wipe}%` }, onPointerDown: startWipe, onPointerMove: (event) => event.currentTarget.hasPointerCapture(event.pointerId) && moveWipe(event) }, /* @__PURE__ */ React.createElement("span", null))), playbackError && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 16 }), /* @__PURE__ */ React.createElement("span", null, playbackError)), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-controls" }, /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: seeking, onClick: () => playing || pendingPlay ? pause() : requestPlay() }, playing ? /* @__PURE__ */ React.createElement(Pause, { size: 18 }) : pendingPlay || seeking ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 18 }) : /* @__PURE__ */ React.createElement(Play, { size: 18 })), /* @__PURE__ */ React.createElement("span", null, formatDuration(time)), /* @__PURE__ */ React.createElement("input", { type: "range", min: "0", max: Math.max(duration, 1), step: "0.1", value: Math.min(time, duration || 1), onChange: (event) => seek(event.target.value) }), /* @__PURE__ */ React.createElement("span", null, formatDuration(duration)), seeking ? /* @__PURE__ */ React.createElement("span", null, "Setting seek point") : pendingPlay && (!leftReady || !rightReady) && /* @__PURE__ */ React.createElement("span", null, "Preparing playback")), matchSettings.matchType === "phash" && /* @__PURE__ */ React.createElement("div", { className: "dm-compare-phash" }, /* @__PURE__ */ React.createElement(PhashSummary, { left, right, threshold: matchSettings.phashDistance })), /* @__PURE__ */ React.createElement("div", { className: "dm-compare-details" }, /* @__PURE__ */ React.createElement(CompareDetails, { label: "A", video: left, selected: selectedIds.has(left.id), onToggle: () => onToggle(left.id) }), /* @__PURE__ */ React.createElement(CompareDetails, { label: "B", video: right, selected: selectedIds.has(right.id), onToggle: () => onToggle(right.id) })));
 }
 function CompareDetails({ label, video, selected, onToggle }) {
   const file = primaryFile(video);

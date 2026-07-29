@@ -2,6 +2,16 @@
 
 Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow designed for reviewing and deleting many duplicate videos at once.
 
+## Screenshots
+
+### Duplicate review
+
+![Duplicate Manager results with pHash comparisons and recommended keepers](docs/images/duplicate-manager-results.png)
+
+### Extension settings
+
+![Duplicate Manager settings for matching, folder scope, codecs, and keeper priority](docs/images/duplicate-manager-settings.png)
+
 ## Features
 
 - Exact MD5/OSHash and configurable visual pHash matching
@@ -37,7 +47,7 @@ Create an installable ZIP:
 .\scripts\package.ps1
 ```
 
-The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-1.9.0.zip`.
+The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-1.9.1.zip`.
 
 ## Upgrade from 1.6.0 or older
 
@@ -56,7 +66,7 @@ installation. This does not affect Cove video metadata or source files.
 
 1. Open Cove and go to `Settings -> Extensions -> Installed`.
 2. Choose **Install from URL**.
-3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-1.9.0.zip` from the GitHub release.
+3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-1.9.1.zip` from the GitHub release.
 4. Enable the extension if Cove does not enable it automatically, then reload Cove.
 5. Open Cove's existing **Duplicate Finder**. The extension replaces that page.
 

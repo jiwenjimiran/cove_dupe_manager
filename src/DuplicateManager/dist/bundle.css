@@ -633,8 +633,18 @@ button:disabled {
 .dm-compare-selects,
 .dm-compare-details {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: .75rem;
+}
+.dm-compare-selects label {
+  min-width: 0;
+}
+.dm-compare-selects select {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dm-compare-stage {
   position: relative;
@@ -875,7 +885,6 @@ button:disabled {
 }
 @media (max-width: 600px) {
   .dm-controls,
-  .dm-compare-selects,
   .dm-compare-details {
     grid-template-columns: 1fr;
   }

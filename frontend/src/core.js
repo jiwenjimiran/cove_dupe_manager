@@ -107,6 +107,13 @@ export function comparisonPlayback(video) {
   };
 }
 
+export function transcodeResolutionCandidates(values) {
+  const resolutions = uniqueStrings(values, []);
+  if (resolutions.length === 0) return [null];
+  const descending = [...resolutions].reverse();
+  return [descending[0], null, ...descending.slice(1)];
+}
+
 export function prepareGroups(apiGroups, options) {
   const settings = normalizeSettings(options);
   const paths = settings.includedPaths.map(normalizePath).filter(Boolean);
