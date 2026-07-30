@@ -200,3 +200,35 @@ test("metadata copy skips unavailable generated covers and tries the next delete
 
   assert.equal(writes.find((item) => item.path === "/api/videos/1/image").body.get("file").size, 14);
 });
+
+test("metadata overwrite replaces conflicting fields, ratings, and cover", async () => {
+  const writes = [];
+  const responses = new Map([
+    ["/api/videos/1", { id: 1, title: "Keeper", imagePath: "/api/videos/1/image", customFields: { note: "keeper" } }],
+    ["/api/videos/2", { id: 2, title: "Deleted", imagePath: "/api/videos/2/image", customFields: { note: "deleted" } }],
+    ["/api/videos/1/segments", []],
+    ["/api/videos/2/segments", []],
+    ["/api/videos/1/ratings", { ratings: { overall: 80 } }],
+    ["/api/videos/2/ratings", { ratings: { overall: 95 } }],
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path === "/api/videos/2/image") return { ok: true, blob: async () => new Blob(["replacement-cover"], { type: "image/jpeg" }) };
+    if (options.method) writes.push({ path, method: options.method, body: typeof options.body === "string" ? JSON.parse(options.body) : options.body || null });
+    if (path === "/api/videos/1/image" && options.method === "POST") return { ok: true, text: async () => "{}" };
+    const body = responses.get(path) ?? {};
+    return { ok: true, text: async () => JSON.stringify(body), statusText: "OK" };
+  };
+
+  try {
+    await copyVideoMetadata(1, [2], { overwriteConflicts: true });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const update = writes.find((item) => item.path === "/api/videos/1" && item.method === "PUT");
+  assert.equal(update.body.title, "Deleted");
+  assert.equal(update.body.customFields.note, "deleted");
+  assert.equal(writes.find((item) => item.path.endsWith("/rating")).body.value, 95);
+  assert.ok(writes.find((item) => item.path === "/api/videos/1/image").body instanceof FormData);
+});

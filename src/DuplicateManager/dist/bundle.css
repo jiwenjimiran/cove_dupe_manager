@@ -519,6 +519,10 @@ button:disabled {
   border-radius: 5px;
   cursor: pointer;
 }
+.dm-checkbox-row:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: .5;
+}
 .dm-checkbox-row input {
   margin-top: .18rem;
   accent-color: #dc2626;

@@ -23,7 +23,7 @@ export function DuplicateManagerPage({ onNavigate }) {
   const [settings, setSettings] = useState(initialSettings);
   const [appliedSettings, setAppliedSettings] = useState(session.searchSettings ? normalizeSettings(session.searchSettings) : null);
   const [rawGroups, setRawGroups] = useState(session.rawGroups);
-  const [query, setQuery] = useState(session.query);
+  const [query, setQuery] = useState(initialUrlSearch.hasSearchParams ? initialUrlSearch.query : session.query);
   const [page, setPage] = useState(initialUrlSearch.hasSearchParams ? initialUrlSearch.page : session.page);
   const [selectedIds, setSelectedIds] = useState(new Set(session.selectedIds));
   const [loading, setLoading] = useState(false);
@@ -60,9 +60,9 @@ export function DuplicateManagerPage({ onNavigate }) {
 
   useEffect(() => {
     if (!settingsReady || typeof window === "undefined") return;
-    const search = duplicateSearchToUrl(window.location.search, settings, page);
+    const search = duplicateSearchToUrl(window.location.search, settings, page, query);
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
-  }, [settings, page, settingsReady]);
+  }, [settings, page, query, settingsReady]);
 
   useEffect(() => {
     const operation = session.deletion;
@@ -158,7 +158,7 @@ export function DuplicateManagerPage({ onNavigate }) {
         sources: group.filter((video) => idSet.has(video.id)).map((video) => video.id),
       }));
       try {
-        for (const plan of plans) await copyVideoMetadata(plan.target.id, plan.sources);
+        for (const plan of plans) await copyVideoMetadata(plan.target.id, plan.sources, { overwriteConflicts: options.overwriteConflictingMetadata });
       } catch (reason) {
         setDeleteStatus("failed");
         setError(`${reason.message || "Metadata copy failed."} No videos were deleted.`);
@@ -262,7 +262,7 @@ export function DuplicateManagerPage({ onNavigate }) {
     </div>}
 
     {compareGroup && <CompareDialog group={compareGroup} matchSettings={appliedSettings || settings} selectedIds={selectedIds} onToggle={toggleSelected} onClose={() => setCompareGroup(null)} />}
-    {confirmOpen && <DeleteDialog summary={summary} onCancel={() => setConfirmOpen(false)} onConfirm={confirmDelete} />}
+    {confirmOpen && <DeleteDialog summary={summary} defaults={settings} onCancel={() => setConfirmOpen(false)} onConfirm={confirmDelete} />}
     {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(paths) => { updateSettings({ includedPaths: paths }); setFolderOpen(false); }} />}
   </div>;
 }
@@ -619,16 +619,18 @@ function PhashSummary({ left, right, threshold }) {
   return <div className="dm-phash-summary">{rows.map(([label, result]) => <div key={label} className={result.matches ? "dm-match" : "dm-mismatch"}>{result.matches ? <Check size={13} /> : <X size={13} />}<span>{label}: {result.value}</span></div>)}</div>;
 }
 
-function DeleteDialog({ summary, onCancel, onConfirm }) {
+function DeleteDialog({ summary, defaults, onCancel, onConfirm }) {
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [deleteGenerated, setDeleteGenerated] = useState(true);
-  const [copyMetadata, setCopyMetadata] = useState(true);
+  const [copyMetadata, setCopyMetadata] = useState(defaults.copyMissingMetadata);
+  const [overwriteMetadata, setOverwriteMetadata] = useState(defaults.overwriteConflictingMetadata);
   return <Modal title="Delete selected duplicates" onClose={onCancel}>
     <p className="dm-dialog-message">Delete {summary.videos} video records affecting {summary.files} files ({formatBytes(summary.bytes)})? At least one video will remain in each affected group.</p>
     <label className="dm-checkbox-row"><input type="checkbox" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} /><span><strong>Delete source file from disk (this will permanently remove the file)</strong><small>This cannot be undone.</small></span></label>
     <label className="dm-checkbox-row"><input type="checkbox" checked={deleteGenerated} onChange={(event) => setDeleteGenerated(event.target.checked)} /><span><strong>Delete generated files</strong><small>Remove Cove thumbnails, previews, sprites, and other generated artifacts.</small></span></label>
-    <label className="dm-checkbox-row"><input type="checkbox" checked={copyMetadata} onChange={(event) => setCopyMetadata(event.target.checked)} /><span><strong>Copy metadata from deleted file to kept file</strong><small>Merge titles, editable metadata, relationships, and markers before deletion.</small></span></label>
-    <div className="dm-dialog-actions"><button className="dm-secondary" onClick={onCancel}>Cancel</button><button className="dm-danger" onClick={() => onConfirm({ deleteFiles, deleteGenerated, copyMetadata })}><Trash2 size={16} />Delete {summary.videos} videos</button></div>
+    <label className="dm-checkbox-row"><input type="checkbox" checked={copyMetadata} onChange={(event) => setCopyMetadata(event.target.checked)} /><span><strong>Copy missing metadata from deleted files</strong><small>Merge titles, editable metadata, relationships, and markers before deletion.</small></span></label>
+    <label className="dm-checkbox-row"><input type="checkbox" checked={overwriteMetadata} disabled={!copyMetadata} onChange={(event) => setOverwriteMetadata(event.target.checked)} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer metadata from deleted files when both videos have a value.</small></span></label>
+    <div className="dm-dialog-actions"><button className="dm-secondary" onClick={onCancel}>Cancel</button><button className="dm-danger" onClick={() => onConfirm({ deleteFiles, deleteGenerated, copyMetadata, overwriteConflictingMetadata: copyMetadata && overwriteMetadata })}><Trash2 size={16} />Delete {summary.videos} videos</button></div>
   </Modal>;
 }
 
@@ -726,6 +728,7 @@ export function DuplicateManagerSettingsPanel() {
     <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label><label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label><DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
     <section><h4>Preferred codecs</h4><p>Best to worst, separated by commas.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>
     <section><h4>Default folder scope</h4><p>Search all folders, only selected folders, or everything except selected folders.</p><FolderScopeControl settings={settings} onChange={update} onPick={() => setFolderOpen(true)} settingsView /></section>
+    <section><h4>Metadata transfer</h4><p>Defaults used when confirming bulk deletion.</p><label className="dm-checkbox-row"><input type="checkbox" checked={settings.copyMissingMetadata} onChange={(event) => update({ copyMissingMetadata: event.target.checked })} /><span><strong>Copy missing metadata from deleted files</strong><small>Merge missing editable metadata, relationships, ratings, markers, and cover artwork into the keeper.</small></span></label><label className="dm-checkbox-row"><input type="checkbox" checked={settings.overwriteConflictingMetadata} disabled={!settings.copyMissingMetadata} onChange={(event) => update({ overwriteConflictingMetadata: event.target.checked })} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer metadata from deleted files when both videos have a value.</small></span></label></section>
     <section><h4>Keeper priority</h4><p>Rules are evaluated top to bottom. The first difference determines the recommended keeper.</p><div className="dm-rule-list">{settings.keeperRules.map((rule, index) => <div key={rule}><span>{index + 1}. {RULE_LABELS[rule]}</span><div><button className="dm-icon-button" disabled={index === 0} onClick={() => moveRule(index, -1)}><ArrowUp size={15} /></button><button className="dm-icon-button" disabled={index === settings.keeperRules.length - 1} onClick={() => moveRule(index, 1)}><ArrowDown size={15} /></button><button className="dm-icon-button" onClick={() => removeRule(index)}><X size={15} /></button></div></div>)}</div>{availableRules.length > 0 && <select value="" onChange={(event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] })}><option value="">Add tie-break rule...</option>{availableRules.map((rule) => <option key={rule} value={rule}>{RULE_LABELS[rule]}</option>)}</select>}</section>
     {message && <div className={`dm-alert ${message === "Settings saved." ? "dm-success" : "dm-error"}`}>{message}</div>}
     {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(includedPaths) => { update({ includedPaths }); setFolderOpen(false); }} />}

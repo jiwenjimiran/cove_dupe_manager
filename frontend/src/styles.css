@@ -80,6 +80,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .dm-modal h2 { margin: 0; font-size: 1rem; }
 .dm-dialog-message { color: var(--color-secondary, #c5c9cf); font-size: .82rem; line-height: 1.45; }
 .dm-checkbox-row { display: flex; align-items: flex-start; gap: .65rem; margin-top: .75rem; padding: .75rem; border: 1px solid var(--color-border, #3a3f47); border-radius: 5px; cursor: pointer; }
+.dm-checkbox-row:has(input:disabled) { cursor: not-allowed; opacity: .5; }
 .dm-checkbox-row input { margin-top: .18rem; accent-color: #dc2626; }
 .dm-checkbox-row span { display: grid; gap: .15rem; font-size: .8rem; }
 .dm-checkbox-row small { color: var(--color-muted, #9298a1); font-size: .68rem; }

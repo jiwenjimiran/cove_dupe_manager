@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.4 - 2026-07-29
+
+- Persist the result-filter search query in the URL and restore it on refresh.
+- Add saved metadata-copy and dependent conflict-overwrite defaults to extension settings.
+- Allow deletion-time metadata transfer to overwrite conflicting fields, ratings, and cover artwork when explicitly enabled.
+
 ## 1.9.3 - 2026-07-29
 
 - Copy a deleted video's generated screenshot cover when it has no explicit `imagePath`.

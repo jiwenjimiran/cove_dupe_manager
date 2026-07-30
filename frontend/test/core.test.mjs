@@ -55,6 +55,12 @@ test("normalizes settings and supports custom page sizes", () => {
   assert.equal(result.phashDistance, 64);
   assert.equal(result.pageSize, 1000);
   assert.deepEqual(result.includedPaths, ["D:/Media"]);
+  assert.equal(result.copyMissingMetadata, true);
+  assert.equal(result.overwriteConflictingMetadata, false);
+  assert.deepEqual(
+    normalizeSettings({ copyMissingMetadata: false, overwriteConflictingMetadata: true }),
+    { ...DEFAULT_SETTINGS, copyMissingMetadata: false, overwriteConflictingMetadata: false },
+  );
   assert.deepEqual(normalizeSettings({ keeperRules: ["metadata", "resolution", "codec", "bitrate", "size", "oldest"] }).keeperRules,
     ["resolution", "codec", "bitrate", "duration", "metadata", "oldest"]);
   assert.deepEqual(normalizeSettings({ keeperRules: ["resolution", "duration", "codec", "bitrate", "metadata", "oldest"] }).keeperRules,
@@ -74,13 +80,16 @@ test("duplicate search controls round-trip through URL parameters", () => {
     maxDurationDelta: 30, minimumDuration: 90, folderMode: "exclude",
     includedPaths: ["D:/Skip One", "E:/Skip Two"], pageSize: 1000,
   });
-  const search = duplicateSearchToUrl("?unrelated=kept", settings, 7);
+  const search = duplicateSearchToUrl("?unrelated=kept", settings, 7, "long title & studio");
   const parsed = duplicateSearchFromUrl(search);
   assert.equal(parsed.hasSearchParams, true);
   assert.equal(new URLSearchParams(search).get("unrelated"), "kept");
   assert.deepEqual(normalizeSettings({ ...DEFAULT_SETTINGS, ...parsed.settings }), settings);
   assert.equal(parsed.page, 7);
+  assert.equal(parsed.query, "long title & studio");
+  assert.equal(new URLSearchParams(search).get("query"), "long title & studio");
   assert.equal(duplicateSearchFromUrl("?unrelated=kept").hasSearchParams, false);
+  assert.equal(duplicateSearchFromUrl("?query=keeper").hasSearchParams, true);
 });
 
 test("comparison playback follows Cove's container and audio compatibility policy", () => {
@@ -255,6 +264,24 @@ test("metadata merge fills scalar gaps and unions relationships", () => {
   assert.deepEqual(update.groups, [{ groupId: 4, videoIndex: 2 }, { groupId: 5, videoIndex: 1 }]);
   assert.deepEqual(update.remoteIds, [{ endpoint: "stash", remoteId: "abc" }]);
   assert.deepEqual(update.customFields, { note: "value", kept: "yes" });
+});
+
+test("metadata overwrite prefers deleted scalar, keyed, and group values", () => {
+  const update = buildMergedVideoUpdate(
+    {
+      title: "Keeper title", details: "Keeper details", groups: [{ id: 4, videoIndex: 1 }],
+      customFields: { conflict: "keeper", keeperOnly: "yes" },
+    },
+    [{
+      title: "Deleted title", details: "Deleted details", groups: [{ id: 4, videoIndex: 8 }],
+      customFields: { conflict: "deleted", sourceOnly: "yes" },
+    }],
+    { overwriteConflicts: true },
+  );
+  assert.equal(update.title, "Deleted title");
+  assert.equal(update.details, "Deleted details");
+  assert.deepEqual(update.groups, [{ groupId: 4, videoIndex: 8 }]);
+  assert.deepEqual(update.customFields, { conflict: "deleted", keeperOnly: "yes", sourceOnly: "yes" });
 });
 
 test("metadata copy count only includes values missing from the keeper", () => {

@@ -64,25 +64,37 @@ export function setRating(videoId, aspect, value) {
   return request(`/api/videos/${videoId}/rating`, { method: "POST", body: JSON.stringify({ aspect, value }) });
 }
 
-export async function copyVideoMetadata(targetId, sourceIds) {
-  const [target, ...sources] = await Promise.all([targetId, ...(sourceIds || [])].map(getVideo));
-  const segmentLists = await Promise.all([targetId, ...(sourceIds || [])].map(listSegments));
-  const ratingLists = await Promise.all([targetId, ...(sourceIds || [])].map(getRatings));
-  const coverSources = !target.imagePath
+export async function copyVideoMetadata(targetId, sourceIds, { overwriteConflicts = false } = {}) {
+  const ids = [targetId, ...(sourceIds || [])];
+  const videos = await Promise.all(ids.map(getVideo));
+  const segments = await Promise.all(ids.map(listSegments));
+  const ratings = await Promise.all(ids.map(getRatings));
+  const target = videos[0];
+  const sourceRecords = videos.slice(1).map((video, index) => ({
+    video,
+    segments: segments[index + 1],
+    ratings: ratings[index + 1],
+  })).sort((left, right) => metadataCount(right.video) - metadataCount(left.video));
+  const sources = sourceRecords.map((record) => record.video);
+  const coverSources = (!target.imagePath || overwriteConflicts)
     ? [...sources].sort((left, right) => Number(Boolean(right.imagePath)) - Number(Boolean(left.imagePath)) || metadataCount(right) - metadataCount(left))
     : [];
-  await updateVideo(targetId, buildMergedVideoUpdate(target, sources));
+  await updateVideo(targetId, buildMergedVideoUpdate(target, sources, { overwriteConflicts }));
   for (const coverSource of coverSources) {
     if (await copyVideoCoverImage(targetId, coverSource)) break;
   }
 
-  const mergedRatings = Object.assign({}, ...ratingLists.slice(1).map((item) => item?.ratings || {}).reverse(), ratingLists[0]?.ratings || {});
+  const targetRatings = ratings[0]?.ratings || {};
+  const sourceRatings = sourceRecords.map((record) => record.ratings?.ratings || {}).reverse();
+  const mergedRatings = overwriteConflicts
+    ? Object.assign({}, targetRatings, ...sourceRatings)
+    : Object.assign({}, ...sourceRatings, targetRatings);
   for (const [aspect, value] of Object.entries(mergedRatings)) {
-    if (ratingLists[0]?.ratings?.[aspect] === undefined) await setRating(targetId, aspect, value);
+    if (overwriteConflicts || targetRatings[aspect] === undefined) await setRating(targetId, aspect, value);
   }
 
-  const existing = new Set((segmentLists[0] || []).map(segmentSignature));
-  for (const segment of segmentLists.slice(1).flat()) {
+  const existing = new Set((segments[0] || []).map(segmentSignature));
+  for (const segment of sourceRecords.flatMap((record) => record.segments || [])) {
     const signature = segmentSignature(segment);
     if (existing.has(signature)) continue;
     await createSegment(targetId, segment);

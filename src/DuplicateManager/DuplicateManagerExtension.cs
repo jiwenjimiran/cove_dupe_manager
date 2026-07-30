@@ -22,7 +22,7 @@ public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IState
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "1.9.3";
+    public string Version => "1.9.4";
     public string? Description => "Advanced duplicate review, comparison, selection, and bulk deletion for Cove videos.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";
@@ -112,6 +112,8 @@ public sealed class DuplicateManagerSettings
     public List<string> KeeperRules { get; set; } = [.. DefaultKeeperRules];
     public string FolderMode { get; set; } = "all";
     public List<string> IncludedPaths { get; set; } = [];
+    public bool CopyMissingMetadata { get; set; } = true;
+    public bool OverwriteConflictingMetadata { get; set; } = false;
 
     public static DuplicateManagerSettings Normalize(DuplicateManagerSettings? value)
     {
@@ -139,6 +141,8 @@ public sealed class DuplicateManagerSettings
         settings.FolderMode = settings.FolderMode?.Trim().ToLowerInvariant() is "include" or "exclude"
             ? settings.FolderMode.Trim().ToLowerInvariant()
             : settings.IncludedPaths.Count > 0 ? "include" : "all";
+        if (!settings.CopyMissingMetadata)
+            settings.OverwriteConflictingMetadata = false;
         return settings;
     }
 

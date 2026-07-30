@@ -9,10 +9,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   keeperRules: ["resolution", "codec", "bitrate", "duration", "metadata", "oldest"],
   folderMode: "all",
   includedPaths: [],
+  copyMissingMetadata: true,
+  overwriteConflictingMetadata: false,
 });
 
 const SEARCH_PARAM_NAMES = Object.freeze([
-  "match", "algorithm", "maxDistance", "durationDelta", "minLength", "folderMode", "folder", "groups", "page",
+  "match", "algorithm", "maxDistance", "durationDelta", "minLength", "folderMode", "folder", "groups", "page", "query",
 ]);
 
 // Keep this aligned with Cove's VideoPlayer compatibility fallback. These containers are
@@ -58,6 +60,8 @@ export function normalizeSettings(value) {
       ? incoming.folderMode
       : incomingPaths.length > 0 ? "include" : "all",
     includedPaths: incomingPaths,
+    copyMissingMetadata: incoming.copyMissingMetadata !== false,
+    overwriteConflictingMetadata: incoming.copyMissingMetadata !== false && incoming.overwriteConflictingMetadata === true,
   };
 }
 
@@ -74,10 +78,11 @@ export function duplicateSearchFromUrl(search) {
   if (params.has("folder")) patch.includedPaths = params.getAll("folder");
   if (params.has("groups")) patch.pageSize = params.get("groups");
   const page = Math.max(1, Math.trunc(Number(params.get("page")) || 1));
-  return { hasSearchParams, settings: patch, page };
+  const query = params.get("query") || "";
+  return { hasSearchParams, settings: patch, page, query };
 }
 
-export function duplicateSearchToUrl(search, settings, page = 1) {
+export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "") {
   const normalized = normalizeSettings(settings);
   const params = new URLSearchParams(search || "");
   for (const name of SEARCH_PARAM_NAMES) params.delete(name);
@@ -90,6 +95,7 @@ export function duplicateSearchToUrl(search, settings, page = 1) {
   for (const path of normalized.includedPaths) params.append("folder", path);
   params.set("groups", String(normalized.pageSize));
   params.set("page", String(Math.max(1, Math.trunc(Number(page)) || 1)));
+  if (String(filterQuery || "").trim()) params.set("query", String(filterQuery).trim());
   const query = params.toString();
   return query ? `?${query}` : "";
 }
@@ -289,18 +295,22 @@ export function metadataCopyCount(target, source) {
   return count;
 }
 
-export function buildMergedVideoUpdate(target, sources) {
+export function buildMergedVideoUpdate(target, sources, { overwriteConflicts = false } = {}) {
   const ordered = [...(sources || [])].sort((a, b) => metadataCount(b) - metadataCount(a));
   const scalarFields = ["title", "code", "details", "director", "date", "rating", "studioId", "captions", "organized", "isVr"];
   const update = {};
-  for (const field of scalarFields) update[field] = firstPopulated(target?.[field], ...ordered.map((item) => item?.[field]));
+  for (const field of scalarFields) {
+    const sourceValues = ordered.map((item) => item?.[field]);
+    update[field] = overwriteConflicts ? firstPopulated(...sourceValues, target?.[field]) : firstPopulated(target?.[field], ...sourceValues);
+  }
   update.urls = uniquePrimitive([...(target?.urls || []), ...ordered.flatMap((item) => item?.urls || [])]);
   update.tagIds = uniqueIds([...(target?.tags || []), ...ordered.flatMap((item) => item?.tags || [])]);
   update.performerIds = uniqueIds([...(target?.performers || []), ...ordered.flatMap((item) => item?.performers || [])]);
   update.galleryIds = uniqueIds([...(target?.galleries || []), ...ordered.flatMap((item) => item?.galleries || [])]);
-  update.groups = uniqueGroups([...(target?.groups || []), ...ordered.flatMap((item) => item?.groups || [])]);
-  update.remoteIds = mergeKeyed(target?.remoteIds, ordered.map((item) => item?.remoteIds));
-  update.customFields = mergeKeyed(target?.customFields, ordered.map((item) => item?.customFields));
+  const sourceGroups = ordered.flatMap((item) => item?.groups || []);
+  update.groups = uniqueGroups(overwriteConflicts ? [...sourceGroups, ...(target?.groups || [])] : [...(target?.groups || []), ...sourceGroups]);
+  update.remoteIds = mergeKeyed(target?.remoteIds, ordered.map((item) => item?.remoteIds), overwriteConflicts);
+  update.customFields = mergeKeyed(target?.customFields, ordered.map((item) => item?.customFields), overwriteConflicts);
   return update;
 }
 
@@ -457,9 +467,11 @@ function uniqueGroups(values) {
   return [...groups.values()];
 }
 
-function mergeKeyed(primary, fallbacks) {
+function mergeKeyed(primary, fallbacks, overwriteConflicts = false) {
   if (Array.isArray(primary) || (fallbacks || []).some(Array.isArray)) return uniqueObjects([...(primary || []), ...(fallbacks || []).flatMap((value) => value || [])]);
-  return Object.assign({}, ...(fallbacks || []).slice().reverse().filter(Boolean), primary || {});
+  return overwriteConflicts
+    ? Object.assign({}, primary || {}, ...(fallbacks || []).slice().reverse().filter(Boolean))
+    : Object.assign({}, ...(fallbacks || []).slice().reverse().filter(Boolean), primary || {});
 }
 
 function phashes(video) {
