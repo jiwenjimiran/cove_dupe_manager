@@ -22,7 +22,7 @@ public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IState
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "1.9.2";
+    public string Version => "1.9.3";
     public string? Description => "Advanced duplicate review, comparison, selection, and bulk deletion for Cove videos.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";

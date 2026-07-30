@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.3 - 2026-07-29
+
+- Copy a deleted video's generated screenshot cover when it has no explicit `imagePath`.
+- Prefer explicit covers and try additional deleted videos when a cover endpoint is unavailable.
+
 ## 1.9.2 - 2026-07-29
 
 - Authenticate comparison, preview, and screenshot media URLs using Cove's access-token or share-session query parameters.

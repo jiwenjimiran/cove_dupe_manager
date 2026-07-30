@@ -46,7 +46,7 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           else
-            echo "value=1.9.2" >> "$GITHUB_OUTPUT"
+            echo "value=1.9.3" >> "$GITHUB_OUTPUT"
           fi
       - name: Package
         shell: bash

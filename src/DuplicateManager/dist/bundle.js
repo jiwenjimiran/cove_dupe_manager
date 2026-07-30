@@ -561,9 +561,11 @@ async function copyVideoMetadata(targetId, sourceIds) {
   const [target, ...sources] = await Promise.all([targetId, ...sourceIds || []].map(getVideo));
   const segmentLists = await Promise.all([targetId, ...sourceIds || []].map(listSegments));
   const ratingLists = await Promise.all([targetId, ...sourceIds || []].map(getRatings));
-  const coverSource = !target.imagePath ? sources.filter((source) => source.imagePath).sort((left, right) => metadataCount(right) - metadataCount(left))[0] : null;
+  const coverSources = !target.imagePath ? [...sources].sort((left, right) => Number(Boolean(right.imagePath)) - Number(Boolean(left.imagePath)) || metadataCount(right) - metadataCount(left)) : [];
   await updateVideo(targetId, buildMergedVideoUpdate(target, sources));
-  if (coverSource) await copyVideoCoverImage(targetId, coverSource);
+  for (const coverSource of coverSources) {
+    if (await copyVideoCoverImage(targetId, coverSource)) break;
+  }
   const mergedRatings = Object.assign({}, ...ratingLists.slice(1).map((item) => item?.ratings || {}).reverse(), ratingLists[0]?.ratings || {});
   for (const [aspect, value] of Object.entries(mergedRatings)) {
     if (ratingLists[0]?.ratings?.[aspect] === void 0) await setRating(targetId, aspect, value);
@@ -579,6 +581,7 @@ async function copyVideoMetadata(targetId, sourceIds) {
 async function copyVideoCoverImage(targetId, source) {
   const sourceUrl = `/api/videos/${source?.id}/image`;
   const response = await fetch(sourceUrl);
+  if (response.status === 404) return false;
   if (!response.ok) throw new Error(`Could not read cover image from video ${source?.id}.`);
   const blob = await response.blob();
   const form = new FormData();
@@ -588,6 +591,7 @@ async function copyVideoCoverImage(targetId, source) {
     const message = await upload.text().catch(() => "");
     throw new Error(message || `Could not copy cover image to video ${targetId}.`);
   }
+  return true;
 }
 function loadFolders(path) {
   return request(`/api/metadata/library-folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);

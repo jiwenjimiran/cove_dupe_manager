@@ -79,6 +79,7 @@ test("metadata copy updates the keeper before recreating ratings and markers", a
   ]);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (path, options = {}) => {
+    if (path === "/api/videos/2/image") return { ok: false, status: 404 };
     if (options.method) writes.push({ path, method: options.method, body: typeof options.body === "string" ? JSON.parse(options.body) : options.body || null });
     const body = responses.get(path) ?? {};
     return { ok: true, text: async () => JSON.stringify(body), statusText: "OK" };
@@ -133,4 +134,69 @@ test("metadata copy fills a missing title and transfers the original explicit co
   const coverUpload = writes.find((item) => item.path === "/api/videos/1/image");
   assert.ok(coverUpload.body instanceof FormData);
   assert.equal(coverUpload.body.get("file").size, 10);
+});
+
+test("metadata copy transfers a generated cover when the deleted video has no explicit imagePath", async () => {
+  const writes = [];
+  const responses = new Map([
+    ["/api/videos/1", { id: 1, title: "Keeper", imagePath: null }],
+    ["/api/videos/2", { id: 2, title: "Deleted", imagePath: null }],
+    ["/api/videos/1/segments", []],
+    ["/api/videos/2/segments", []],
+    ["/api/videos/1/ratings", { hostId: 1, ratings: {} }],
+    ["/api/videos/2/ratings", { hostId: 2, ratings: {} }],
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path === "/api/videos/2/image") {
+      return { ok: true, status: 200, blob: async () => new Blob(["generated-cover"], { type: "image/jpeg" }) };
+    }
+    if (path === "/api/videos/1/image" && options.method === "POST") {
+      writes.push({ path, method: options.method, body: options.body });
+      return { ok: true, status: 200, text: async () => "{}" };
+    }
+    if (options.method) writes.push({ path, method: options.method, body: typeof options.body === "string" ? JSON.parse(options.body) : options.body || null });
+    const body = responses.get(path) ?? {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), statusText: "OK" };
+  };
+
+  try {
+    await copyVideoMetadata(1, [2]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const coverUpload = writes.find((item) => item.path === "/api/videos/1/image");
+  assert.ok(coverUpload.body instanceof FormData);
+  assert.equal(coverUpload.body.get("file").size, 15);
+});
+
+test("metadata copy skips unavailable generated covers and tries the next deleted video", async () => {
+  const writes = [];
+  const videos = new Map([
+    [1, { id: 1, title: "Keeper", imagePath: null }],
+    [2, { id: 2, title: "First source", imagePath: null, details: "More metadata" }],
+    [3, { id: 3, title: "Second source", imagePath: null }],
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path === "/api/videos/2/image") return { ok: false, status: 404 };
+    if (path === "/api/videos/3/image") return { ok: true, status: 200, blob: async () => new Blob(["fallback-cover"], { type: "image/jpeg" }) };
+    if (path === "/api/videos/1/image" && options.method === "POST") {
+      writes.push({ path, method: options.method, body: options.body });
+      return { ok: true, status: 200, text: async () => "{}" };
+    }
+    if (options.method) writes.push({ path, method: options.method, body: typeof options.body === "string" ? JSON.parse(options.body) : options.body || null });
+    const videoMatch = String(path).match(/^\/api\/videos\/(\d+)$/);
+    const body = videoMatch ? videos.get(Number(videoMatch[1])) : path.endsWith("/ratings") ? { ratings: {} } : [];
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), statusText: "OK" };
+  };
+
+  try {
+    await copyVideoMetadata(1, [2, 3]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(writes.find((item) => item.path === "/api/videos/1/image").body.get("file").size, 14);
 });

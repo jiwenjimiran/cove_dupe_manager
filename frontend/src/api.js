@@ -68,11 +68,13 @@ export async function copyVideoMetadata(targetId, sourceIds) {
   const [target, ...sources] = await Promise.all([targetId, ...(sourceIds || [])].map(getVideo));
   const segmentLists = await Promise.all([targetId, ...(sourceIds || [])].map(listSegments));
   const ratingLists = await Promise.all([targetId, ...(sourceIds || [])].map(getRatings));
-  const coverSource = !target.imagePath
-    ? sources.filter((source) => source.imagePath).sort((left, right) => metadataCount(right) - metadataCount(left))[0]
-    : null;
+  const coverSources = !target.imagePath
+    ? [...sources].sort((left, right) => Number(Boolean(right.imagePath)) - Number(Boolean(left.imagePath)) || metadataCount(right) - metadataCount(left))
+    : [];
   await updateVideo(targetId, buildMergedVideoUpdate(target, sources));
-  if (coverSource) await copyVideoCoverImage(targetId, coverSource);
+  for (const coverSource of coverSources) {
+    if (await copyVideoCoverImage(targetId, coverSource)) break;
+  }
 
   const mergedRatings = Object.assign({}, ...ratingLists.slice(1).map((item) => item?.ratings || {}).reverse(), ratingLists[0]?.ratings || {});
   for (const [aspect, value] of Object.entries(mergedRatings)) {
@@ -89,10 +91,11 @@ export async function copyVideoMetadata(targetId, sourceIds) {
 }
 
 export async function copyVideoCoverImage(targetId, source) {
-  // imagePath proves the source has an explicit cover, but contains a display-size limit.
-  // Fetch the canonical endpoint without max= so the original blob is preserved.
+  // This endpoint returns the original explicit cover when present, otherwise Cove's generated
+  // screenshot. Fetch without max= so an explicit source blob is preserved at full resolution.
   const sourceUrl = `/api/videos/${source?.id}/image`;
   const response = await fetch(sourceUrl);
+  if (response.status === 404) return false;
   if (!response.ok) throw new Error(`Could not read cover image from video ${source?.id}.`);
   const blob = await response.blob();
   const form = new FormData();
@@ -102,6 +105,7 @@ export async function copyVideoCoverImage(targetId, source) {
     const message = await upload.text().catch(() => "");
     throw new Error(message || `Could not copy cover image to video ${targetId}.`);
   }
+  return true;
 }
 
 export function loadFolders(path) {
