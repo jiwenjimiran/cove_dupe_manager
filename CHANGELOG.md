@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.7 - 2026-07-30
+
+- Refresh Cove authentication in place during long-running deletion jobs and retry an interrupted request once without reloading the page.
+- Copy metadata and delete each selected video independently so completed deletions remain completed when a later video fails.
+- Reconcile ambiguous deletion responses, preserve unresolved videos, and report exact completed, failed, interrupted, and not-attempted counts.
+- Show live per-video metadata and deletion progress for long jobs.
+
 ## 1.9.6 - 2026-07-30
 
 - Clarify that an in-progress bulk deletion might take a while.

@@ -4,7 +4,7 @@ import {
   ChevronRight, Columns2, Copy, Folder, Loader2, Pause, Play, RefreshCw, RotateCcw,
   Save, Search, Settings2, Trash2, X,
 } from "@cove/runtime/lucide-react";
-import { copyVideoMetadata, deleteVideos, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
+import { findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
@@ -12,6 +12,7 @@ import {
   parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
+import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob } from "./deletionJob.js";
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -32,6 +33,8 @@ export function DuplicateManagerPage({ onNavigate }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteStatus, setDeleteStatus] = useState(session.deletion?.status || "idle");
   const [deleteNotice, setDeleteNotice] = useState(session.deletion?.notice || "");
+  const [deleteProgress, setDeleteProgress] = useState(session.deletion?.progress || null);
+  const [deleteResult, setDeleteResult] = useState(session.deletion?.result || null);
   const [folderOpen, setFolderOpen] = useState(false);
   const [dismissedGroupKeys, setDismissedGroupKeys] = useState(new Set(session.dismissedGroupKeys || []));
   const [settingsReady, setSettingsReady] = useState(false);
@@ -69,13 +72,21 @@ export function DuplicateManagerPage({ onNavigate }) {
     const operation = session.deletion;
     if (!operation?.promise || operation.status !== "pending") return;
     let active = true;
-    operation.promise.then((status) => { if (active) setDeleteStatus(status || operation.status || "complete"); }).catch((reason) => {
+    const timer = setInterval(() => {
+      if (active && operation.progress) setDeleteProgress({ ...operation.progress });
+    }, 250);
+    operation.promise.then((result) => {
+      if (!active) return;
+      setDeleteStatus(result?.status || operation.status || "complete");
+      setDeleteResult(result || operation.result || null);
+      setDeleteNotice(operation.notice || "");
+    }).catch((reason) => {
       if (!active) return;
       setRawGroups(session.rawGroups);
       setDeleteStatus("failed");
-      setError(`${reason.message || "Deletion failed."} Results were restored; run the search again to reconcile any partial deletion.`);
+      setError(reason.message || "Deletion job failed unexpectedly.");
     });
-    return () => { active = false; };
+    return () => { active = false; clearInterval(timer); };
   }, []);
 
   useEffect(() => { session.query = query; session.page = page; session.selectedIds = new Set(selectedIds); }, [query, page, selectedIds]);
@@ -87,10 +98,12 @@ export function DuplicateManagerPage({ onNavigate }) {
   const visibleGroups = filteredGroups.slice((Math.min(page, totalPages) - 1) * settings.pageSize, Math.min(page, totalPages) * settings.pageSize);
   const summary = useMemo(() => selectedSummary(groups, selectedIds), [groups, selectedIds]);
   const unsafeGroups = useMemo(() => validateKeeperSafety(groups, selectedIds), [groups, selectedIds]);
+  const deletionPending = deleteStatus === "pending";
 
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
   async function runSearch(options = settings, resultPage = 1) {
+    if (deletionPending) return;
     const searchSettings = normalizeSettings(options);
     setLoading(true);
     setError("");
@@ -119,6 +132,7 @@ export function DuplicateManagerPage({ onNavigate }) {
   }
 
   function toggleSelected(id) {
+    if (deletionPending) return;
     setSelectedIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -127,17 +141,20 @@ export function DuplicateManagerPage({ onNavigate }) {
   }
 
   function selectRecommended(targetGroups = filteredGroups) {
+    if (deletionPending) return;
     const targetIds = new Set(targetGroups.flat().map((video) => video.id));
     const recommended = autoSelectForDeletion(targetGroups, settings);
     setSelectedIds((current) => new Set([...current].filter((id) => !targetIds.has(id)).concat([...recommended])));
   }
 
   function clearSelected(targetGroups = filteredGroups) {
+    if (deletionPending) return;
     const targetIds = new Set(targetGroups.flat().map((video) => video.id));
     setSelectedIds((current) => new Set([...current].filter((id) => !targetIds.has(id))));
   }
 
   function dismissGroup(group) {
+    if (deletionPending) return;
     const next = new Set(dismissedGroupKeys).add(groupKey(group));
     const remainingIds = new Set(preparedGroups.filter((candidate) => !next.has(groupKey(candidate))).flat().map((video) => video.id));
     setDismissedGroupKeys(next);
@@ -151,63 +168,55 @@ export function DuplicateManagerPage({ onNavigate }) {
     setConfirmOpen(false);
     setDeleteStatus("pending");
     setDeleteNotice("");
+    setDeleteResult(null);
     setError("");
-    const previous = rawGroups;
     const idSet = new Set(ids);
-    const protectedIds = new Set();
-    const metadataWarnings = [];
-    if (options.copyMetadata) {
-      const plans = groups.filter((group) => group.some((video) => idSet.has(video.id))).map((group) => ({
-        target: chooseKeeper(group.filter((video) => !idSet.has(video.id)), appliedSettings || settings),
-        sources: group.filter((video) => idSet.has(video.id)).map((video) => video.id),
-      }));
-      for (const plan of plans) {
-        try {
-          const result = await copyVideoMetadata(plan.target.id, plan.sources, { overwriteConflicts: options.overwriteConflictingMetadata });
-          metadataWarnings.push(...(result?.warnings || []));
-        } catch (reason) {
-          plan.sources.forEach((id) => protectedIds.add(id));
-          metadataWarnings.push(`Metadata could not be copied to video ${plan.target.id}: ${reason.message || "unknown error"}`);
-        }
-      }
-    }
-    const deleteIds = ids.filter((id) => !protectedIds.has(id));
-    if (deleteIds.length === 0) {
-      setDeleteStatus("failed");
-      setError(`Metadata copy failed for all selected groups. No videos were deleted. ${metadataWarnings.join(" ")}`);
-      return;
-    }
-    let notice = "";
-    if (metadataWarnings.length > 0) {
-      const protectedMessage = protectedIds.size > 0 ? `${protectedIds.size} videos were kept because their metadata copy failed. ` : "";
-      notice = `${protectedMessage}${metadataWarnings.length} metadata warning${metadataWarnings.length === 1 ? "" : "s"} occurred; deletion will continue for the remaining ${deleteIds.length} videos.`;
-      setDeleteNotice(notice);
-    }
-    const deleteIdSet = new Set(deleteIds);
-    const optimistic = (rawGroups || []).map((group) => group.filter((video) => !deleteIdSet.has(video.id))).filter((group) => group.length > 1);
-    setRawGroups(optimistic);
-    setSelectedIds(new Set());
-    session.rawGroups = optimistic;
-    session.selectedIds = new Set();
-    const operation = { status: "pending", ids: deleteIds, protectedIds: [...protectedIds], notice, promise: null };
-    operation.promise = deleteVideos(deleteIds, options)
-      .then(() => { operation.status = protectedIds.size > 0 ? "partial" : "complete"; session.deletion = operation; return operation.status; })
-      .catch((reason) => {
-        operation.status = "failed";
-        operation.error = reason.message || "Deletion failed.";
-        session.rawGroups = previous;
-        session.stale = true;
-        session.deletion = operation;
-        throw reason;
-      });
+    const plans = groups.filter((group) => group.some((video) => idSet.has(video.id))).map((group) => ({
+      target: chooseKeeper(group.filter((video) => !idSet.has(video.id)), appliedSettings || settings),
+      sources: group.filter((video) => idSet.has(video.id)),
+    }));
+    const queue = buildDeletionQueue(plans, { overwriteConflicts: options.overwriteConflictingMetadata });
+    const operation = { status: "pending", ids, progress: { stage: options.copyMetadata ? "metadata" : "deleting", current: 1, total: queue.length, completed: 0, failed: 0, warnings: 0 }, result: null, notice: "", promise: null };
+    setDeleteProgress({ ...operation.progress });
+    session.selectedIds = new Set(ids);
+    operation.promise = runDeletionJob({
+      queue,
+      options,
+      onProgress: (progress) => {
+        operation.progress = progress;
+        setDeleteProgress({ ...progress });
+        if (progress.stage !== "deleted") return;
+        const nextGroups = removeVideoIdsFromGroups(session.rawGroups || rawGroups, [progress.sourceId]);
+        const nextSelected = new Set(session.selectedIds);
+        nextSelected.delete(progress.sourceId);
+        session.rawGroups = nextGroups;
+        session.selectedIds = nextSelected;
+        setRawGroups(nextGroups);
+        setSelectedIds(new Set(nextSelected));
+      },
+    }).then((result) => {
+      operation.status = result.status;
+      operation.result = result;
+      operation.notice = deletionResultNotice(result);
+      session.deletion = operation;
+      session.stale = result.status !== "complete";
+      return result;
+    }).catch((reason) => {
+      operation.status = "failed";
+      operation.error = reason.message || "Deletion job failed unexpectedly.";
+      session.deletion = operation;
+      session.stale = true;
+      throw reason;
+    });
     session.deletion = operation;
     try {
-      await operation.promise;
-      setDeleteStatus(protectedIds.size > 0 ? "partial" : "complete");
+      const result = await operation.promise;
+      setDeleteStatus(result.status);
+      setDeleteResult(result);
+      setDeleteNotice(operation.notice);
     } catch (reason) {
-      setRawGroups(previous);
       setDeleteStatus("failed");
-      setError(`${reason.message || "Deletion failed."} Results were restored; run the search again to reconcile any partial deletion.`);
+      setError(reason.message || "Deletion job failed unexpectedly.");
     }
   }
 
@@ -220,13 +229,15 @@ export function DuplicateManagerPage({ onNavigate }) {
     setPage(1);
     setDeleteStatus("idle");
     setDeleteNotice("");
+    setDeleteProgress(null);
+    setDeleteResult(null);
     setDismissedGroupKeys(new Set());
   }
 
   return <div className="dm-page">
     <header className="dm-header">
       <div><div className="dm-title"><Copy size={23} /><h1>Duplicate Manager</h1></div><p>Compare, select, and remove duplicate videos in one operation.</p></div>
-      {rawGroups && <button className="dm-icon-button" title="Clear cached results" onClick={resetSession}><RotateCcw size={18} /></button>}
+      {rawGroups && <button className="dm-icon-button" disabled={deletionPending} title="Clear cached results" onClick={resetSession}><RotateCcw size={18} /></button>}
     </header>
 
     <section className="dm-controls">
@@ -238,20 +249,21 @@ export function DuplicateManagerPage({ onNavigate }) {
       </>}
       <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => updateSettings({ minimumDuration })} />
       <FolderScopeControl settings={settings} onChange={updateSettings} onPick={() => setFolderOpen(true)} />
-      <button className="dm-primary" disabled={loading} onClick={() => runSearch()}>{loading ? <Loader2 className="dm-spin" size={17} /> : <Search size={17} />}{loading ? "Searching" : "Find duplicates"}</button>
+      <button className="dm-primary" disabled={loading || deletionPending} onClick={() => runSearch()}>{loading ? <Loader2 className="dm-spin" size={17} /> : <Search size={17} />}{loading ? "Searching" : "Find duplicates"}</button>
     </section>
 
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
     {deleteNotice && <div className="dm-alert dm-warning"><AlertTriangle size={17} /><span>{deleteNotice}</span><button onClick={() => setDeleteNotice("")}><X size={15} /></button></div>}
-    {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />Deleting {summary.videos || "selected"} videos in the background. This might take a while.</div>}
-    {deleteStatus === "complete" && <div className="dm-alert dm-success"><Check size={17} />Bulk deletion finished.</div>}
-    {deleteStatus === "partial" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />Bulk deletion finished for eligible videos; videos with failed metadata copies were kept.</div>}
+    {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />{deletionProgressText(deleteProgress)}</div>}
+    {deleteStatus === "complete" && <div className="dm-alert dm-success"><Check size={17} />Deletion finished. {deleteResult?.completedIds?.length || 0} videos deleted.</div>}
+    {deleteStatus === "partial" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />Deletion finished with errors. {deleteResult?.completedIds?.length || 0} deleted; {deleteResult?.failed?.length || 0} kept.</div>}
+    {deleteStatus === "auth_required" && <div className="dm-alert dm-error"><AlertTriangle size={17} />Authentication could not be refreshed. {deleteResult?.completedIds?.length || 0} deleted; {deleteResult?.failed?.length || 0} previously failed; {deleteResult?.interrupted ? 1 : 0} interrupted; {deleteResult?.notAttemptedIds?.length || 0} not attempted.</div>}
 
     {rawGroups && <div className="dm-result-toolbar">
       <div className="dm-search"><Search size={16} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Filter title, path, performer, studio, tag, or codec" /></div>
       <PageSizeControl value={settings.pageSize} onChange={(pageSize) => updateSettings({ pageSize })} />
-      <button className="dm-secondary" onClick={() => selectRecommended(filteredGroups)}>Select all but keepers</button>
-      <button className="dm-secondary" onClick={() => clearSelected(filteredGroups)}>Clear selection</button>
+      <button className="dm-secondary" disabled={deletionPending} onClick={() => selectRecommended(filteredGroups)}>Select all but keepers</button>
+      <button className="dm-secondary" disabled={deletionPending} onClick={() => clearSelected(filteredGroups)}>Clear selection</button>
     </div>}
 
     {rawGroups && <div className="dm-summary">
@@ -772,6 +784,21 @@ export function DuplicateManagerSettingsPanel() {
 }
 
 export default { components: { DuplicateManagerPage, DuplicateManagerSettingsPanel } };
+
+function deletionProgressText(progress) {
+  if (!progress?.total) return "Preparing deletion. This might take a while.";
+  const action = progress.stage === "metadata" ? "Copying metadata for" : progress.stage === "deleting" ? "Deleting" : "Deleted";
+  return `${action} video ${progress.current} of ${progress.total}. ${progress.completed} completed. This might take a while.`;
+}
+
+function deletionResultNotice(result) {
+  if (!result) return "";
+  const parts = [];
+  if (result.warnings?.length) parts.push(`${result.warnings.length} metadata warning${result.warnings.length === 1 ? "" : "s"}`);
+  if (result.failed?.length) parts.push(`${result.failed.length} video${result.failed.length === 1 ? " was" : "s were"} kept after an error`);
+  if (result.status === "auth_required") parts.push(`video ${result.interrupted?.sourceId} was interrupted and ${result.notAttemptedIds.length} video${result.notAttemptedIds.length === 1 ? " was" : "s were"} not attempted`);
+  return parts.length ? `${parts.join("; ")}.` : "";
+}
 
 function groupKey(group) {
   return (group || []).map((video) => Number(video.id)).sort((a, b) => a - b).join("-");

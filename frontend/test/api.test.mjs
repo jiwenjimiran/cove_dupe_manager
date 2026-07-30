@@ -1,6 +1,196 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyVideoMetadata, findDuplicates, loadTranscodeResolutions, mediaUrls } from "../src/api.js";
+import {
+  AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, findDuplicates,
+  loadTranscodeResolutions, mediaUrls, request,
+} from "../src/api.js";
+
+function storage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  };
+}
+
+function jwt(exp) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode({ exp })}.signature`;
+}
+
+test("authenticated requests attach Cove's bearer token", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = storage({ cove_access_token: "access-token" });
+  globalThis.sessionStorage = storage();
+  let authorization = null;
+  globalThis.fetch = async (_path, options) => {
+    authorization = options.headers.get("Authorization");
+    return { ok: true, status: 200, text: async () => "{}" };
+  };
+  try {
+    await request("/api/test");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+  assert.equal(authorization, "Bearer access-token");
+});
+
+test("expired authentication refreshes in place and stores the rotated token pair", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  const expired = jwt(Math.floor(Date.now() / 1000) - 60);
+  const refreshed = jwt(Math.floor(Date.now() / 1000) + 900);
+  globalThis.localStorage = storage({ cove_access_token: expired, cove_refresh_token: "refresh-one" });
+  globalThis.sessionStorage = storage();
+  const paths = [];
+  globalThis.fetch = async (path, options) => {
+    paths.push(path);
+    if (path === "/api/auth/refresh") {
+      assert.deepEqual(JSON.parse(options.body), { refreshToken: "refresh-one" });
+      return { ok: true, status: 200, json: async () => ({ token: refreshed, refreshToken: "refresh-two" }) };
+    }
+    assert.equal(options.headers.get("Authorization"), `Bearer ${refreshed}`);
+    return { ok: true, status: 200, text: async () => "{}" };
+  };
+  try {
+    await request("/api/test");
+    assert.equal(globalThis.localStorage.getItem("cove_access_token"), refreshed);
+    assert.equal(globalThis.localStorage.getItem("cove_refresh_token"), "refresh-two");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+  assert.deepEqual(paths, ["/api/auth/refresh", "/api/test"]);
+});
+
+test("concurrent expired requests share one token refresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  const expired = jwt(Math.floor(Date.now() / 1000) - 60);
+  const refreshed = jwt(Math.floor(Date.now() / 1000) + 900);
+  globalThis.localStorage = storage({ cove_access_token: expired, cove_refresh_token: "refresh-one" });
+  globalThis.sessionStorage = storage();
+  let refreshes = 0;
+  globalThis.fetch = async (path) => {
+    if (path === "/api/auth/refresh") {
+      refreshes++;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { ok: true, status: 200, json: async () => ({ token: refreshed, refreshToken: "refresh-two" }) };
+    }
+    return { ok: true, status: 200 };
+  };
+  try {
+    await Promise.all([authenticatedFetch("/api/one"), authenticatedFetch("/api/two")]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+  assert.equal(refreshes, 1);
+});
+
+test("a 401 reuses a token Cove rotated before starting another refresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = storage({ cove_access_token: "old-access", cove_refresh_token: "old-refresh" });
+  globalThis.sessionStorage = storage();
+  let calls = 0;
+  globalThis.fetch = async (path, options) => {
+    calls++;
+    assert.notEqual(path, "/api/auth/refresh");
+    if (calls === 1) {
+      globalThis.localStorage.setItem("cove_access_token", "new-access");
+      globalThis.localStorage.setItem("cove_refresh_token", "new-refresh");
+      return { ok: false, status: 401 };
+    }
+    assert.equal(options.headers.get("Authorization"), "Bearer new-access");
+    return { ok: true, status: 200 };
+  };
+  try {
+    await authenticatedFetch("/api/test");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+  assert.equal(calls, 2);
+});
+
+test("failed token refresh raises a typed authentication error", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = storage({ cove_access_token: "expired-access", cove_refresh_token: "expired-refresh" });
+  globalThis.sessionStorage = storage();
+  globalThis.fetch = async (path) => path === "/api/auth/refresh" ? { ok: false, status: 401 } : { ok: false, status: 401 };
+  try {
+    await assert.rejects(() => authenticatedFetch("/api/test"), AuthenticationRequiredError);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+});
+
+test("a 401 refreshes and retries the interrupted request exactly once", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = storage({ cove_access_token: "old-access", cove_refresh_token: "refresh-one" });
+  globalThis.sessionStorage = storage();
+  let apiCalls = 0;
+  let refreshes = 0;
+  globalThis.fetch = async (path, options) => {
+    if (path === "/api/auth/refresh") {
+      refreshes++;
+      return { ok: true, status: 200, json: async () => ({ token: "new-access", refreshToken: "refresh-two" }) };
+    }
+    apiCalls++;
+    if (apiCalls === 1) return { ok: false, status: 401 };
+    assert.equal(options.headers.get("Authorization"), "Bearer new-access");
+    return { ok: true, status: 200 };
+  };
+  try {
+    await authenticatedFetch("/api/test");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+  assert.equal(refreshes, 1);
+  assert.equal(apiCalls, 2);
+});
+
+test("authenticated FormData uploads do not force a JSON content type", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  globalThis.localStorage = storage({ cove_access_token: "access-token" });
+  globalThis.sessionStorage = storage();
+  let headers;
+  globalThis.fetch = async (_path, options) => {
+    headers = options.headers;
+    return { ok: true, status: 200 };
+  };
+  try {
+    await authenticatedFetch("/api/upload", { method: "POST", body: new FormData() });
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+  }
+  assert.equal(headers.has("Content-Type"), false);
+  assert.equal(headers.get("Authorization"), "Bearer access-token");
+});
 
 test("comparison transcode URLs use Cove's FFmpeg endpoint and absolute start", () => {
   assert.equal(mediaUrls.transcode(42), "/api/stream/video/42/transcode");
