@@ -255,6 +255,12 @@ export function formatDurationInput(seconds) {
     : `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
+export function parsePageSizeInput(value, fallback = 25) {
+  const text = String(value ?? "").trim();
+  if (!/^\d+$/.test(text)) return clampNumber(fallback, 1, 10000, 25);
+  return clampNumber(text, 1, 10000, 25);
+}
+
 export function phashComparison(leftVideo, rightVideo, threshold = 0) {
   const left = primaryFile(leftVideo);
   const right = primaryFile(rightVideo);

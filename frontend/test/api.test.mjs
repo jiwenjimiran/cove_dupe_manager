@@ -201,6 +201,37 @@ test("metadata copy skips unavailable generated covers and tries the next delete
   assert.equal(writes.find((item) => item.path === "/api/videos/1/image").body.get("file").size, 14);
 });
 
+test("metadata copy reports a cover warning without aborting other metadata", async () => {
+  const writes = [];
+  const responses = new Map([
+    ["/api/videos/1", { id: 1, title: "Keeper", imagePath: null }],
+    ["/api/videos/2", { id: 2, title: "Deleted", imagePath: "/api/videos/2/image", details: "Copied details" }],
+    ["/api/videos/1/segments", []],
+    ["/api/videos/2/segments", [{ startSec: 4, endSec: 5, kind: "chapter", title: "Copied marker" }]],
+    ["/api/videos/1/ratings", { ratings: {} }],
+    ["/api/videos/2/ratings", { ratings: { quality: 90 } }],
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path === "/api/videos/2/image") throw new TypeError("network failure");
+    if (options.method) writes.push({ path, method: options.method, body: typeof options.body === "string" ? JSON.parse(options.body) : options.body || null });
+    const body = responses.get(path) ?? {};
+    return { ok: true, text: async () => JSON.stringify(body), statusText: "OK" };
+  };
+
+  let result;
+  try {
+    result = await copyVideoMetadata(1, [2]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(result.warnings, ["Cover artwork could not be copied to video 1."]);
+  assert.equal(writes.find((item) => item.path === "/api/videos/1" && item.method === "PUT").body.details, "Copied details");
+  assert.equal(writes.find((item) => item.path.endsWith("/rating")).body.value, 90);
+  assert.equal(writes.find((item) => item.path.endsWith("/segments") && item.method === "POST").body.title, "Copied marker");
+});
+
 test("metadata overwrite replaces conflicting fields, ratings, and cover", async () => {
   const writes = [];
   const responses = new Map([

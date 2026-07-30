@@ -79,10 +79,20 @@ export async function copyVideoMetadata(targetId, sourceIds, { overwriteConflict
   const coverSources = (!target.imagePath || overwriteConflicts)
     ? [...sources].sort((left, right) => Number(Boolean(right.imagePath)) - Number(Boolean(left.imagePath)) || metadataCount(right) - metadataCount(left))
     : [];
+  const warnings = [];
   await updateVideo(targetId, buildMergedVideoUpdate(target, sources, { overwriteConflicts }));
+  let coverCopied = coverSources.length === 0;
   for (const coverSource of coverSources) {
-    if (await copyVideoCoverImage(targetId, coverSource)) break;
+    try {
+      if (await copyVideoCoverImage(targetId, coverSource)) {
+        coverCopied = true;
+        break;
+      }
+    } catch {
+      // Cover transfer is best-effort. Editable metadata, ratings, markers, and deletion can continue.
+    }
   }
+  if (!coverCopied) warnings.push(`Cover artwork could not be copied to video ${targetId}.`);
 
   const targetRatings = ratings[0]?.ratings || {};
   const sourceRatings = sourceRecords.map((record) => record.ratings?.ratings || {}).reverse();
@@ -100,6 +110,7 @@ export async function copyVideoMetadata(targetId, sourceIds, { overwriteConflict
     await createSegment(targetId, segment);
     existing.add(signature);
   }
+  return { warnings };
 }
 
 export async function copyVideoCoverImage(targetId, source) {

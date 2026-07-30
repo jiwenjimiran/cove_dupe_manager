@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "1.9.4",
+    [string]$Version = "1.9.5",
     [switch]$NoRestore
 )
 

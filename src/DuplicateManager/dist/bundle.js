@@ -253,6 +253,11 @@ function formatDurationInput(seconds) {
   const remaining = total % 60;
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}` : `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
+function parsePageSizeInput(value, fallback = 25) {
+  const text = String(value ?? "").trim();
+  if (!/^\d+$/.test(text)) return clampNumber(fallback, 1, 1e4, 25);
+  return clampNumber(text, 1, 1e4, 25);
+}
 function phashComparison(leftVideo, rightVideo, threshold = 0) {
   const left = primaryFile(leftVideo);
   const right = primaryFile(rightVideo);
@@ -581,10 +586,19 @@ async function copyVideoMetadata(targetId, sourceIds, { overwriteConflicts = fal
   })).sort((left, right) => metadataCount(right.video) - metadataCount(left.video));
   const sources = sourceRecords.map((record) => record.video);
   const coverSources = !target.imagePath || overwriteConflicts ? [...sources].sort((left, right) => Number(Boolean(right.imagePath)) - Number(Boolean(left.imagePath)) || metadataCount(right) - metadataCount(left)) : [];
+  const warnings = [];
   await updateVideo(targetId, buildMergedVideoUpdate(target, sources, { overwriteConflicts }));
+  let coverCopied = coverSources.length === 0;
   for (const coverSource of coverSources) {
-    if (await copyVideoCoverImage(targetId, coverSource)) break;
+    try {
+      if (await copyVideoCoverImage(targetId, coverSource)) {
+        coverCopied = true;
+        break;
+      }
+    } catch {
+    }
   }
+  if (!coverCopied) warnings.push(`Cover artwork could not be copied to video ${targetId}.`);
   const targetRatings = ratings[0]?.ratings || {};
   const sourceRatings = sourceRecords.map((record) => record.ratings?.ratings || {}).reverse();
   const mergedRatings = overwriteConflicts ? Object.assign({}, targetRatings, ...sourceRatings) : Object.assign({}, ...sourceRatings, targetRatings);
@@ -598,6 +612,7 @@ async function copyVideoMetadata(targetId, sourceIds, { overwriteConflicts = fal
     await createSegment(targetId, segment);
     existing.add(signature);
   }
+  return { warnings };
 }
 async function copyVideoCoverImage(targetId, source) {
   const sourceUrl = `/api/videos/${source?.id}/image`;
@@ -696,6 +711,7 @@ function DuplicateManagerPage({ onNavigate }) {
   const [compareGroup, setCompareGroup] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteStatus, setDeleteStatus] = useState(session.deletion?.status || "idle");
+  const [deleteNotice, setDeleteNotice] = useState(session.deletion?.notice || "");
   const [folderOpen, setFolderOpen] = useState(false);
   const [dismissedGroupKeys, setDismissedGroupKeys] = useState(new Set(session.dismissedGroupKeys || []));
   const [settingsReady, setSettingsReady] = useState(false);
@@ -732,8 +748,8 @@ function DuplicateManagerPage({ onNavigate }) {
     const operation = session.deletion;
     if (!operation?.promise || operation.status !== "pending") return;
     let active = true;
-    operation.promise.then(() => {
-      if (active) setDeleteStatus("complete");
+    operation.promise.then((status) => {
+      if (active) setDeleteStatus(status || operation.status || "complete");
     }).catch((reason) => {
       if (!active) return;
       setRawGroups(session.rawGroups);
@@ -814,32 +830,50 @@ function DuplicateManagerPage({ onNavigate }) {
     if (ids.length === 0 || unsafeGroups.length > 0) return;
     setConfirmOpen(false);
     setDeleteStatus("pending");
+    setDeleteNotice("");
     setError("");
     const previous = rawGroups;
     const idSet = new Set(ids);
+    const protectedIds = /* @__PURE__ */ new Set();
+    const metadataWarnings = [];
     if (options.copyMetadata) {
       const plans = groups.filter((group) => group.some((video) => idSet.has(video.id))).map((group) => ({
         target: chooseKeeper(group.filter((video) => !idSet.has(video.id)), appliedSettings || settings),
         sources: group.filter((video) => idSet.has(video.id)).map((video) => video.id)
       }));
-      try {
-        for (const plan of plans) await copyVideoMetadata(plan.target.id, plan.sources, { overwriteConflicts: options.overwriteConflictingMetadata });
-      } catch (reason) {
-        setDeleteStatus("failed");
-        setError(`${reason.message || "Metadata copy failed."} No videos were deleted.`);
-        return;
+      for (const plan of plans) {
+        try {
+          const result = await copyVideoMetadata(plan.target.id, plan.sources, { overwriteConflicts: options.overwriteConflictingMetadata });
+          metadataWarnings.push(...result?.warnings || []);
+        } catch (reason) {
+          plan.sources.forEach((id) => protectedIds.add(id));
+          metadataWarnings.push(`Metadata could not be copied to video ${plan.target.id}: ${reason.message || "unknown error"}`);
+        }
       }
     }
-    const optimistic = (rawGroups || []).map((group) => group.filter((video) => !idSet.has(video.id))).filter((group) => group.length > 1);
+    const deleteIds = ids.filter((id) => !protectedIds.has(id));
+    if (deleteIds.length === 0) {
+      setDeleteStatus("failed");
+      setError(`Metadata copy failed for all selected groups. No videos were deleted. ${metadataWarnings.join(" ")}`);
+      return;
+    }
+    let notice = "";
+    if (metadataWarnings.length > 0) {
+      const protectedMessage = protectedIds.size > 0 ? `${protectedIds.size} videos were kept because their metadata copy failed. ` : "";
+      notice = `${protectedMessage}${metadataWarnings.length} metadata warning${metadataWarnings.length === 1 ? "" : "s"} occurred; deletion will continue for the remaining ${deleteIds.length} videos.`;
+      setDeleteNotice(notice);
+    }
+    const deleteIdSet = new Set(deleteIds);
+    const optimistic = (rawGroups || []).map((group) => group.filter((video) => !deleteIdSet.has(video.id))).filter((group) => group.length > 1);
     setRawGroups(optimistic);
     setSelectedIds(/* @__PURE__ */ new Set());
     session.rawGroups = optimistic;
     session.selectedIds = /* @__PURE__ */ new Set();
-    const operation = { status: "pending", ids, promise: null };
-    operation.promise = deleteVideos(ids, options).then(() => {
-      operation.status = "complete";
+    const operation = { status: "pending", ids: deleteIds, protectedIds: [...protectedIds], notice, promise: null };
+    operation.promise = deleteVideos(deleteIds, options).then(() => {
+      operation.status = protectedIds.size > 0 ? "partial" : "complete";
       session.deletion = operation;
-      return "complete";
+      return operation.status;
     }).catch((reason) => {
       operation.status = "failed";
       operation.error = reason.message || "Deletion failed.";
@@ -851,7 +885,7 @@ function DuplicateManagerPage({ onNavigate }) {
     session.deletion = operation;
     try {
       await operation.promise;
-      setDeleteStatus("complete");
+      setDeleteStatus(protectedIds.size > 0 ? "partial" : "complete");
     } catch (reason) {
       setRawGroups(previous);
       setDeleteStatus("failed");
@@ -866,9 +900,10 @@ function DuplicateManagerPage({ onNavigate }) {
     setQuery("");
     setPage(1);
     setDeleteStatus("idle");
+    setDeleteNotice("");
     setDismissedGroupKeys(/* @__PURE__ */ new Set());
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Manager")), /* @__PURE__ */ React.createElement("p", null, "Compare, select, and remove duplicate videos in one operation.")), rawGroups && /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", title: "Clear cached results", onClick: resetSession }, /* @__PURE__ */ React.createElement(RotateCcw, { size: 18 }))), /* @__PURE__ */ React.createElement("section", { className: "dm-controls" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => updateSettings({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"), /* @__PURE__ */ React.createElement("option", { value: "remoteid" }, "Same remote ID"))), settings.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => updateSettings({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5 only"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash only"))), settings.matchType === "phash" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => updateSettings({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Duration delta (sec)"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: settings.maxDurationDelta, onChange: (event) => updateSettings({ maxDurationDelta: Number(event.target.value) }) }))), /* @__PURE__ */ React.createElement(DurationInput, { label: "Minimum length", value: settings.minimumDuration, onChange: (minimumDuration) => updateSettings({ minimumDuration }) }), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: updateSettings, onPick: () => setFolderOpen(true) }), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: loading, onClick: () => runSearch() }, loading ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }) : /* @__PURE__ */ React.createElement(Search, { size: 17 }), loading ? "Searching" : "Find duplicates")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, error), /* @__PURE__ */ React.createElement("button", { onClick: () => setError("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteStatus === "pending" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }), "Deleting ", summary.videos || "selected", " videos in the background. You can leave this page."), deleteStatus === "complete" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-success" }, /* @__PURE__ */ React.createElement(Check, { size: 17 }), "Bulk deletion finished."), rawGroups && /* @__PURE__ */ React.createElement("div", { className: "dm-result-toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "dm-search" }, /* @__PURE__ */ React.createElement(Search, { size: 16 }), /* @__PURE__ */ React.createElement("input", { value: query, onChange: (event) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Manager")), /* @__PURE__ */ React.createElement("p", null, "Compare, select, and remove duplicate videos in one operation.")), rawGroups && /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", title: "Clear cached results", onClick: resetSession }, /* @__PURE__ */ React.createElement(RotateCcw, { size: 18 }))), /* @__PURE__ */ React.createElement("section", { className: "dm-controls" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => updateSettings({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"), /* @__PURE__ */ React.createElement("option", { value: "remoteid" }, "Same remote ID"))), settings.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => updateSettings({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5 only"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash only"))), settings.matchType === "phash" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => updateSettings({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Duration delta (sec)"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: settings.maxDurationDelta, onChange: (event) => updateSettings({ maxDurationDelta: Number(event.target.value) }) }))), /* @__PURE__ */ React.createElement(DurationInput, { label: "Minimum length", value: settings.minimumDuration, onChange: (minimumDuration) => updateSettings({ minimumDuration }) }), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: updateSettings, onPick: () => setFolderOpen(true) }), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: loading, onClick: () => runSearch() }, loading ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }) : /* @__PURE__ */ React.createElement(Search, { size: 17 }), loading ? "Searching" : "Find duplicates")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, error), /* @__PURE__ */ React.createElement("button", { onClick: () => setError("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteNotice && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, deleteNotice), /* @__PURE__ */ React.createElement("button", { onClick: () => setDeleteNotice("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteStatus === "pending" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }), "Deleting ", summary.videos || "selected", " videos in the background. You can leave this page."), deleteStatus === "complete" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-success" }, /* @__PURE__ */ React.createElement(Check, { size: 17 }), "Bulk deletion finished."), deleteStatus === "partial" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "Bulk deletion finished for eligible videos; videos with failed metadata copies were kept."), rawGroups && /* @__PURE__ */ React.createElement("div", { className: "dm-result-toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "dm-search" }, /* @__PURE__ */ React.createElement(Search, { size: 16 }), /* @__PURE__ */ React.createElement("input", { value: query, onChange: (event) => {
     setQuery(event.target.value);
     setPage(1);
   }, placeholder: "Filter title, path, performer, studio, tag, or codec" })), /* @__PURE__ */ React.createElement(PageSizeControl, { value: settings.pageSize, onChange: (pageSize) => updateSettings({ pageSize }) }), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", onClick: () => selectRecommended(filteredGroups) }, "Select all but keepers"), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", onClick: () => clearSelected(filteredGroups) }, "Clear selection")), rawGroups && /* @__PURE__ */ React.createElement("div", { className: "dm-summary" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, filteredGroups.length), " groups"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, filteredGroups.reduce((sum, group) => sum + group.length, 0)), " videos"), /* @__PURE__ */ React.createElement("span", { className: "dm-summary-selected" }, /* @__PURE__ */ React.createElement("strong", null, summary.videos), " selected, ", formatBytes(summary.bytes))), rawGroups && filteredGroups.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dm-empty" }, /* @__PURE__ */ React.createElement(Check, { size: 44 }), /* @__PURE__ */ React.createElement("h2", null, "No duplicate groups"), /* @__PURE__ */ React.createElement("p", null, "Change the filters or run a different match.")), /* @__PURE__ */ React.createElement("div", { className: "dm-groups" }, visibleGroups.map((group, index) => /* @__PURE__ */ React.createElement(
@@ -1288,8 +1323,36 @@ function FolderNode({ entry, depth, selected, onToggle }) {
 }
 function PageSizeControl({ value, onChange, settingsLabel = false }) {
   const presets = [10, 25, 50, 100];
-  const custom = !presets.includes(Number(value));
-  return /* @__PURE__ */ React.createElement("div", { className: `dm-page-size ${settingsLabel ? "dm-page-size-settings" : ""}` }, settingsLabel && /* @__PURE__ */ React.createElement("span", null, "Groups per page"), /* @__PURE__ */ React.createElement("select", { "aria-label": "Groups per page", value: custom ? "custom" : String(value), onChange: (event) => onChange(event.target.value === "custom" ? 250 : Number(event.target.value)) }, presets.map((size) => /* @__PURE__ */ React.createElement("option", { key: size, value: size }, size, settingsLabel ? "" : " groups")), /* @__PURE__ */ React.createElement("option", { value: "custom" }, "Custom")), custom && /* @__PURE__ */ React.createElement("input", { "aria-label": "Custom groups per page", type: "number", min: "1", max: "10000", value, onChange: (event) => onChange(Math.max(1, Math.min(1e4, Number(event.target.value) || 1))) }));
+  const inputRef = useRef(null);
+  const [customSelected, setCustomSelected] = useState(!presets.includes(Number(value)));
+  const [text, setText] = useState(String(value));
+  const custom = customSelected || !presets.includes(Number(value));
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+  useEffect(() => {
+    if (!customSelected || !inputRef.current) return;
+    inputRef.current.focus();
+    inputRef.current.select();
+  }, [customSelected]);
+  function commit() {
+    const next = parsePageSizeInput(text, value);
+    setText(String(next));
+    onChange(next);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: `dm-page-size ${settingsLabel ? "dm-page-size-settings" : ""}` }, settingsLabel && /* @__PURE__ */ React.createElement("span", null, "Groups per page"), /* @__PURE__ */ React.createElement("select", { "aria-label": "Groups per page", value: custom ? "custom" : String(value), onChange: (event) => {
+    if (event.target.value === "custom") setCustomSelected(true);
+    else {
+      setCustomSelected(false);
+      onChange(Number(event.target.value));
+    }
+  } }, presets.map((size) => /* @__PURE__ */ React.createElement("option", { key: size, value: size }, size, settingsLabel ? "" : " groups")), /* @__PURE__ */ React.createElement("option", { value: "custom" }, "Custom")), custom && /* @__PURE__ */ React.createElement("input", { ref: inputRef, "aria-label": "Custom groups per page", type: "number", min: "1", max: "10000", value: text, onChange: (event) => setText(event.target.value), onBlur: commit, onKeyDown: (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+      event.currentTarget.blur();
+    }
+  } }));
 }
 function DurationInput({ label, value, onChange }) {
   const [text, setText] = useState(formatDurationInput(value));

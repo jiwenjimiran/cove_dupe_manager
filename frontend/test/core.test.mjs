@@ -13,6 +13,7 @@ import {
   metadataCopyCount,
   metadataCount,
   normalizeSettings,
+  parsePageSizeInput,
   parseDurationInput,
   phashComparison,
   prepareGroups,
@@ -129,6 +130,14 @@ test("duration input accepts seconds, MM:SS, and HH:MM:SS", () => {
   assert.equal(parseDurationInput("1:30"), 90);
   assert.equal(parseDurationInput("1:02:03"), 3723);
   assert.equal(parseDurationInput("1:99"), null);
+});
+
+test("custom page size input commits only complete bounded integers", () => {
+  assert.equal(parsePageSizeInput("500", 25), 500);
+  assert.equal(parsePageSizeInput("", 100), 100);
+  assert.equal(parsePageSizeInput("not a number", 50), 50);
+  assert.equal(parsePageSizeInput("20000", 25), 10000);
+  assert.equal(parsePageSizeInput("0", 25), 1);
 });
 
 test("pHash comparison reports distance and plainly worded file differences", () => {

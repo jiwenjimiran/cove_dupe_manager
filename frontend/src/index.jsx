@@ -9,7 +9,7 @@ import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
   displayPath, formatDuration, formatDurationInput, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
-  phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
+  parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
 
@@ -31,6 +31,7 @@ export function DuplicateManagerPage({ onNavigate }) {
   const [compareGroup, setCompareGroup] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteStatus, setDeleteStatus] = useState(session.deletion?.status || "idle");
+  const [deleteNotice, setDeleteNotice] = useState(session.deletion?.notice || "");
   const [folderOpen, setFolderOpen] = useState(false);
   const [dismissedGroupKeys, setDismissedGroupKeys] = useState(new Set(session.dismissedGroupKeys || []));
   const [settingsReady, setSettingsReady] = useState(false);
@@ -68,7 +69,7 @@ export function DuplicateManagerPage({ onNavigate }) {
     const operation = session.deletion;
     if (!operation?.promise || operation.status !== "pending") return;
     let active = true;
-    operation.promise.then(() => { if (active) setDeleteStatus("complete"); }).catch((reason) => {
+    operation.promise.then((status) => { if (active) setDeleteStatus(status || operation.status || "complete"); }).catch((reason) => {
       if (!active) return;
       setRawGroups(session.rawGroups);
       setDeleteStatus("failed");
@@ -149,30 +150,48 @@ export function DuplicateManagerPage({ onNavigate }) {
     if (ids.length === 0 || unsafeGroups.length > 0) return;
     setConfirmOpen(false);
     setDeleteStatus("pending");
+    setDeleteNotice("");
     setError("");
     const previous = rawGroups;
     const idSet = new Set(ids);
+    const protectedIds = new Set();
+    const metadataWarnings = [];
     if (options.copyMetadata) {
       const plans = groups.filter((group) => group.some((video) => idSet.has(video.id))).map((group) => ({
         target: chooseKeeper(group.filter((video) => !idSet.has(video.id)), appliedSettings || settings),
         sources: group.filter((video) => idSet.has(video.id)).map((video) => video.id),
       }));
-      try {
-        for (const plan of plans) await copyVideoMetadata(plan.target.id, plan.sources, { overwriteConflicts: options.overwriteConflictingMetadata });
-      } catch (reason) {
-        setDeleteStatus("failed");
-        setError(`${reason.message || "Metadata copy failed."} No videos were deleted.`);
-        return;
+      for (const plan of plans) {
+        try {
+          const result = await copyVideoMetadata(plan.target.id, plan.sources, { overwriteConflicts: options.overwriteConflictingMetadata });
+          metadataWarnings.push(...(result?.warnings || []));
+        } catch (reason) {
+          plan.sources.forEach((id) => protectedIds.add(id));
+          metadataWarnings.push(`Metadata could not be copied to video ${plan.target.id}: ${reason.message || "unknown error"}`);
+        }
       }
     }
-    const optimistic = (rawGroups || []).map((group) => group.filter((video) => !idSet.has(video.id))).filter((group) => group.length > 1);
+    const deleteIds = ids.filter((id) => !protectedIds.has(id));
+    if (deleteIds.length === 0) {
+      setDeleteStatus("failed");
+      setError(`Metadata copy failed for all selected groups. No videos were deleted. ${metadataWarnings.join(" ")}`);
+      return;
+    }
+    let notice = "";
+    if (metadataWarnings.length > 0) {
+      const protectedMessage = protectedIds.size > 0 ? `${protectedIds.size} videos were kept because their metadata copy failed. ` : "";
+      notice = `${protectedMessage}${metadataWarnings.length} metadata warning${metadataWarnings.length === 1 ? "" : "s"} occurred; deletion will continue for the remaining ${deleteIds.length} videos.`;
+      setDeleteNotice(notice);
+    }
+    const deleteIdSet = new Set(deleteIds);
+    const optimistic = (rawGroups || []).map((group) => group.filter((video) => !deleteIdSet.has(video.id))).filter((group) => group.length > 1);
     setRawGroups(optimistic);
     setSelectedIds(new Set());
     session.rawGroups = optimistic;
     session.selectedIds = new Set();
-    const operation = { status: "pending", ids, promise: null };
-    operation.promise = deleteVideos(ids, options)
-      .then(() => { operation.status = "complete"; session.deletion = operation; return "complete"; })
+    const operation = { status: "pending", ids: deleteIds, protectedIds: [...protectedIds], notice, promise: null };
+    operation.promise = deleteVideos(deleteIds, options)
+      .then(() => { operation.status = protectedIds.size > 0 ? "partial" : "complete"; session.deletion = operation; return operation.status; })
       .catch((reason) => {
         operation.status = "failed";
         operation.error = reason.message || "Deletion failed.";
@@ -184,7 +203,7 @@ export function DuplicateManagerPage({ onNavigate }) {
     session.deletion = operation;
     try {
       await operation.promise;
-      setDeleteStatus("complete");
+      setDeleteStatus(protectedIds.size > 0 ? "partial" : "complete");
     } catch (reason) {
       setRawGroups(previous);
       setDeleteStatus("failed");
@@ -200,6 +219,7 @@ export function DuplicateManagerPage({ onNavigate }) {
     setQuery("");
     setPage(1);
     setDeleteStatus("idle");
+    setDeleteNotice("");
     setDismissedGroupKeys(new Set());
   }
 
@@ -222,8 +242,10 @@ export function DuplicateManagerPage({ onNavigate }) {
     </section>
 
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
+    {deleteNotice && <div className="dm-alert dm-warning"><AlertTriangle size={17} /><span>{deleteNotice}</span><button onClick={() => setDeleteNotice("")}><X size={15} /></button></div>}
     {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />Deleting {summary.videos || "selected"} videos in the background. You can leave this page.</div>}
     {deleteStatus === "complete" && <div className="dm-alert dm-success"><Check size={17} />Bulk deletion finished.</div>}
+    {deleteStatus === "partial" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />Bulk deletion finished for eligible videos; videos with failed metadata copies were kept.</div>}
 
     {rawGroups && <div className="dm-result-toolbar">
       <div className="dm-search"><Search size={16} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Filter title, path, performer, studio, tag, or codec" /></div>
@@ -681,14 +703,28 @@ function FolderNode({ entry, depth, selected, onToggle }) {
 
 function PageSizeControl({ value, onChange, settingsLabel = false }) {
   const presets = [10, 25, 50, 100];
-  const custom = !presets.includes(Number(value));
+  const inputRef = useRef(null);
+  const [customSelected, setCustomSelected] = useState(!presets.includes(Number(value)));
+  const [text, setText] = useState(String(value));
+  const custom = customSelected || !presets.includes(Number(value));
+  useEffect(() => { setText(String(value)); }, [value]);
+  useEffect(() => {
+    if (!customSelected || !inputRef.current) return;
+    inputRef.current.focus();
+    inputRef.current.select();
+  }, [customSelected]);
+  function commit() {
+    const next = parsePageSizeInput(text, value);
+    setText(String(next));
+    onChange(next);
+  }
   return <div className={`dm-page-size ${settingsLabel ? "dm-page-size-settings" : ""}`}>
     {settingsLabel && <span>Groups per page</span>}
-    <select aria-label="Groups per page" value={custom ? "custom" : String(value)} onChange={(event) => onChange(event.target.value === "custom" ? 250 : Number(event.target.value))}>
+    <select aria-label="Groups per page" value={custom ? "custom" : String(value)} onChange={(event) => { if (event.target.value === "custom") setCustomSelected(true); else { setCustomSelected(false); onChange(Number(event.target.value)); } }}>
       {presets.map((size) => <option key={size} value={size}>{size}{settingsLabel ? "" : " groups"}</option>)}
       <option value="custom">Custom</option>
     </select>
-    {custom && <input aria-label="Custom groups per page" type="number" min="1" max="10000" value={value} onChange={(event) => onChange(Math.max(1, Math.min(10000, Number(event.target.value) || 1)))} />}
+    {custom && <input ref={inputRef} aria-label="Custom groups per page" type="number" min="1" max="10000" value={text} onChange={(event) => setText(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commit(); event.currentTarget.blur(); } }} />}
   </div>;
 }
 

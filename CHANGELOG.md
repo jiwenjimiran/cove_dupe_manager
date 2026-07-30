@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.5 - 2026-07-29
+
+- Keep the custom groups-per-page input stable while typing and commit it only on blur or Enter.
+- Treat cover-art transfer failures as warnings so metadata copying and bulk deletion can continue.
+- Preserve videos from groups with fatal metadata-copy errors while deleting eligible videos from other groups.
+
 ## 1.9.4 - 2026-07-29
 
 - Persist the result-filter search query in the URL and restore it on refresh.
