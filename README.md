@@ -12,6 +12,10 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 
 ![Duplicate Manager settings for matching, folder scope, codecs, and keeper priority](docs/images/duplicate-manager-settings.png)
 
+### Side-by-side comparator
+
+![Duplicate Manager side-by-side video comparator with a draggable wipe control and pHash summary](docs/images/duplicate-manager-comparator.png)
+
 ## Features
 
 - Exact MD5/OSHash and configurable visual pHash matching
