@@ -243,7 +243,7 @@ export function DuplicateManagerPage({ onNavigate }) {
 
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
     {deleteNotice && <div className="dm-alert dm-warning"><AlertTriangle size={17} /><span>{deleteNotice}</span><button onClick={() => setDeleteNotice("")}><X size={15} /></button></div>}
-    {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />Deleting {summary.videos || "selected"} videos in the background. You can leave this page.</div>}
+    {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />Deleting {summary.videos || "selected"} videos in the background. This might take a while.</div>}
     {deleteStatus === "complete" && <div className="dm-alert dm-success"><Check size={17} />Bulk deletion finished.</div>}
     {deleteStatus === "partial" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />Bulk deletion finished for eligible videos; videos with failed metadata copies were kept.</div>}
 

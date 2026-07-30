@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.6 - 2026-07-30
+
+- Clarify that an in-progress bulk deletion might take a while.
+
 ## 1.9.5 - 2026-07-29
 
 - Keep the custom groups-per-page input stable while typing and commit it only on blur or Enter.
