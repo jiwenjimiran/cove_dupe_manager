@@ -23,15 +23,17 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Shareable search URLs that restore controls, result-filter queries, and run the duplicate search after refresh
 - All/include/exclude folder scope, text filtering, group pagination, and session-cached results
 - Select-to-delete workflow with automatic "keep recommended" rules
-- Configurable metadata, resolution, codec, bitrate, size, and age priorities
+- Balanced codec-aware keeper recommendations with clear reasons, risk scoring, and an optional custom-rule mode
 - Muted hover previews and synchronized Direct/FFmpeg A/B video comparison with a wipe slider
-- One confirmation for bulk record, source-file, and generated-file deletion
+- Recoverable source-file cleanup through a per-folder `.dedup-trash`, plus records-only and exact-match permanent modes
 - Incremental per-video deletion with automatic in-place authentication refresh and exact partial-failure reporting
+- Per-user affinity, rating, bookmark, and interaction migration before duplicate records are removed
+- A separate review-only image deduper using stored exact pHashes, metadata merging, and archive protection
 - A safety check that requires at least one keeper in every affected group
 - Saved metadata-transfer defaults, including checked-by-default missing-value copying and optional conflict overwriting
 - Defaults under `Settings -> Extensions -> Installed -> Duplicate Manager`
 
-The extension targets Cove `1.0.0` or newer. Matching and deletion use Cove's authenticated APIs, so normal Cove video and file permissions remain in effect.
+The extension targets Cove `1.1.0` or newer. Matching and deletion use Cove's authenticated APIs, so normal Cove video and image permissions remain in effect.
 
 ## Build
 
@@ -52,7 +54,7 @@ Create an installable ZIP:
 .\scripts\package.ps1
 ```
 
-The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-1.9.7.zip`.
+The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.0.0.zip`.
 
 ## Upgrade from 1.6.0 or older
 
@@ -71,7 +73,7 @@ installation. This does not affect Cove video metadata or source files.
 
 1. Open Cove and go to `Settings -> Extensions -> Installed`.
 2. Choose **Install from URL**.
-3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-1.9.7.zip` from the GitHub release.
+3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.0.0.zip` from the GitHub release.
 4. Enable the extension if Cove does not enable it automatically, then reload Cove.
 5. Open Cove's existing **Duplicate Finder**. The extension replaces that page.
 

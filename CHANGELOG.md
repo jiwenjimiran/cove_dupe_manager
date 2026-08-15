@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 - 2026-08-15
+
+- Add balanced, codec-aware keeper ranking with an explanation for each recommendation while retaining A's custom rule mode.
+- Score risky visual-match groups, sort them first for review, and exclude high-risk groups from safe bulk selection.
+- Preserve per-user affinities, ratings, bookmarks, and interactions when duplicate videos are merged.
+- Stage source-file cleanup through recoverable `.dedup-trash` folders; permanent deletion remains limited to exact fingerprint matches.
+- Add a review-only duplicate-image page using Cove's stored pHashes, metadata/engagement merging, protected archive entries, and recoverable cleanup.
+- Require the corresponding Cove read/write/delete permission on every extension endpoint.
+
 ## 1.9.7 - 2026-07-30
 
 - Refresh Cove authentication in place during long-running deletion jobs and retry an interrupted request once without reloading the page.

@@ -10,13 +10,24 @@
     <None Include="dist\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(UseLocalCovePlugins)' == 'false'">
+  <ItemGroup Condition="'$(CoveHostAssemblyDir)' != ''">
+    <Reference Include="Cove.Plugins"><HintPath>$(CoveHostAssemblyDir)\Cove.Plugins.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Cove.Sdk"><HintPath>$(CoveHostAssemblyDir)\Cove.Sdk.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Cove.Core"><HintPath>$(CoveHostAssemblyDir)\Cove.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Cove.Data"><HintPath>$(CoveHostAssemblyDir)\Cove.Data.dll</HintPath><Private>false</Private></Reference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" ExcludeAssets="runtime" />
+    <PackageReference Include="Npgsql" Version="10.0.3" ExcludeAssets="runtime" />
+    <PackageReference Include="Pgvector" Version="0.3.2" ExcludeAssets="runtime" />
+    <PackageReference Include="MediatR.Contracts" Version="2.0.1" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCovePlugins)' == 'false' and '$(CoveHostAssemblyDir)' == ''">
     <PackageReference Include="Cove.Plugins" Version="$(CovePluginsVersion)">
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>
   </ItemGroup>
 
-  <ItemGroup Condition="'$(UseLocalCovePlugins)' == 'true'">
+  <ItemGroup Condition="'$(UseLocalCovePlugins)' == 'true' and '$(CoveHostAssemblyDir)' == ''">
     <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj" Condition="Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>

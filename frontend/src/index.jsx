@@ -4,11 +4,11 @@ import {
   ChevronRight, Columns2, Copy, Folder, Loader2, Pause, Play, RefreshCw, RotateCcw,
   Save, Search, Settings2, Trash2, X,
 } from "@cove/runtime/lucide-react";
-import { findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
+import { deleteImages, emptyDuplicateTrash, finalizeImageFileAction, findDuplicateImages, findDuplicates, listDuplicateTrash, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, mergeImages, pruneImageFiles, restoreDuplicateTrash, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
-  displayPath, formatDuration, formatDurationInput, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
+  displayPath, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
   parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
@@ -93,7 +93,9 @@ export function DuplicateManagerPage({ onNavigate }) {
 
   const preparedGroups = useMemo(() => rawGroups ? prepareGroups(rawGroups, appliedSettings || settings) : [], [rawGroups, appliedSettings]);
   const groups = useMemo(() => preparedGroups.filter((group) => !dismissedGroupKeys.has(groupKey(group))), [preparedGroups, dismissedGroupKeys]);
-  const filteredGroups = useMemo(() => filterGroups(groups, query), [groups, query]);
+  const filteredGroups = useMemo(() => filterGroups(groups, query).sort((left, right) =>
+    groupRisk(right, appliedSettings || settings).score - groupRisk(left, appliedSettings || settings).score),
+  [groups, query, appliedSettings, settings]);
   const totalPages = Math.max(1, Math.ceil(filteredGroups.length / settings.pageSize));
   const visibleGroups = filteredGroups.slice((Math.min(page, totalPages) - 1) * settings.pageSize, Math.min(page, totalPages) * settings.pageSize);
   const summary = useMemo(() => selectedSummary(groups, selectedIds), [groups, selectedIds]);
@@ -140,8 +142,10 @@ export function DuplicateManagerPage({ onNavigate }) {
     });
   }
 
-  function selectRecommended(targetGroups = filteredGroups) {
+  function selectRecommended(targetGroups = filteredGroups, skipHighRisk = false) {
     if (deletionPending) return;
+    if (skipHighRisk && (appliedSettings || settings).matchType === "phash")
+      targetGroups = targetGroups.filter((group) => groupRisk(group).score < 10);
     const targetIds = new Set(targetGroups.flat().map((video) => video.id));
     const recommended = autoSelectForDeletion(targetGroups, settings);
     setSelectedIds((current) => new Set([...current].filter((id) => !targetIds.has(id)).concat([...recommended])));
@@ -262,7 +266,7 @@ export function DuplicateManagerPage({ onNavigate }) {
     {rawGroups && <div className="dm-result-toolbar">
       <div className="dm-search"><Search size={16} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Filter title, path, performer, studio, tag, or codec" /></div>
       <PageSizeControl value={settings.pageSize} onChange={(pageSize) => updateSettings({ pageSize })} />
-      <button className="dm-secondary" disabled={deletionPending} onClick={() => selectRecommended(filteredGroups)}>Select all but keepers</button>
+      <button className="dm-secondary" disabled={deletionPending} onClick={() => selectRecommended(filteredGroups, true)}>Select safe recommendations</button>
       <button className="dm-secondary" disabled={deletionPending} onClick={() => clearSelected(filteredGroups)}>Clear selection</button>
     </div>}
 
@@ -281,7 +285,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       matchSettings={appliedSettings || settings}
       selectedIds={selectedIds}
       onToggle={toggleSelected}
-      onSelectRecommended={() => selectRecommended([group])}
+      onSelectRecommended={() => selectRecommended([group], false)}
       onDismiss={() => dismissGroup(group)}
       onCompare={() => setCompareGroup(group)}
       onNavigate={onNavigate}
@@ -303,8 +307,10 @@ export function DuplicateManagerPage({ onNavigate }) {
 
 function DuplicateGroup({ group, number, settings, matchSettings, selectedIds, onToggle, onSelectRecommended, onDismiss, onCompare, onNavigate }) {
   const keeper = chooseKeeper(group, settings);
+  const risk = groupRisk(group);
+  const reason = keeperReason(group, settings);
   return <section className="dm-group">
-    <header><div><strong>Group {number}</strong><span>{group.length} videos</span></div><div>
+    <header><div><strong>Group {number}</strong><span>{group.length} videos</span>{risk.score > 0 && <span title={risk.notes.join("; ")}>risk {risk.score}</span>}<span title={reason.text}>{reason.step}</span></div><div>
       <button className="dm-secondary" onClick={onCompare}><Columns2 size={15} />Compare</button>
       <button className="dm-secondary" onClick={onSelectRecommended}>Keep recommended</button>
       <button className="dm-icon-button" title="Remove this comparison" aria-label="Remove this comparison" onClick={onDismiss}><X size={16} /></button>
@@ -654,17 +660,17 @@ function PhashSummary({ left, right, threshold }) {
 }
 
 function DeleteDialog({ summary, defaults, onCancel, onConfirm }) {
-  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [fileMode, setFileMode] = useState("trash");
   const [deleteGenerated, setDeleteGenerated] = useState(true);
   const [copyMetadata, setCopyMetadata] = useState(defaults.copyMissingMetadata);
   const [overwriteMetadata, setOverwriteMetadata] = useState(defaults.overwriteConflictingMetadata);
   return <Modal title="Delete selected duplicates" onClose={onCancel}>
     <p className="dm-dialog-message">Delete {summary.videos} video records affecting {summary.files} files ({formatBytes(summary.bytes)})? At least one video will remain in each affected group.</p>
-    <label className="dm-checkbox-row"><input type="checkbox" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} /><span><strong>Delete source file from disk (this will permanently remove the file)</strong><small>This cannot be undone.</small></span></label>
+    <label><span>Source files</span><select value={fileMode} onChange={(event) => setFileMode(event.target.value)}><option value="trash">Move to recoverable .dedup-trash</option><option value="records">Keep on disk (records only)</option>{defaults.matchType === "fingerprint" && <option value="permanent">Delete permanently (exact matches only)</option>}</select></label>
     <label className="dm-checkbox-row"><input type="checkbox" checked={deleteGenerated} onChange={(event) => setDeleteGenerated(event.target.checked)} /><span><strong>Delete generated files</strong><small>Remove Cove thumbnails, previews, sprites, and other generated artifacts.</small></span></label>
     <label className="dm-checkbox-row"><input type="checkbox" checked={copyMetadata} onChange={(event) => setCopyMetadata(event.target.checked)} /><span><strong>Copy missing metadata from deleted files</strong><small>Merge titles, editable metadata, relationships, and markers before deletion.</small></span></label>
     <label className="dm-checkbox-row"><input type="checkbox" checked={overwriteMetadata} disabled={!copyMetadata} onChange={(event) => setOverwriteMetadata(event.target.checked)} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer metadata from deleted files when both videos have a value.</small></span></label>
-    <div className="dm-dialog-actions"><button className="dm-secondary" onClick={onCancel}>Cancel</button><button className="dm-danger" onClick={() => onConfirm({ deleteFiles, deleteGenerated, copyMetadata, overwriteConflictingMetadata: copyMetadata && overwriteMetadata })}><Trash2 size={16} />Delete {summary.videos} videos</button></div>
+    <div className="dm-dialog-actions"><button className="dm-secondary" onClick={onCancel}>Cancel</button><button className="dm-danger" onClick={() => onConfirm({ fileMode, deleteFiles: false, deleteGenerated, copyMetadata, preserveEngagement: true, overwriteConflictingMetadata: copyMetadata && overwriteMetadata })}><Trash2 size={16} />Delete {summary.videos} videos</button></div>
   </Modal>;
 }
 
@@ -758,6 +764,42 @@ function Modal({ title, onClose, wide, children }) {
   return <div className="dm-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className={`dm-modal ${wide ? "dm-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="dm-icon-button" onClick={onClose}><X size={18} /></button></header>{children}</div></div>;
 }
 
+export function DuplicateImagesPage() {
+  const [result, setResult] = useState(null);
+  const [page, setPage] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [keepers, setKeepers] = useState({});
+  async function load(next = page) {
+    setBusy(true); setError("");
+    try { const value = await findDuplicateImages({ page: next, pageSize: 25 }); setResult(value); setPage(next); }
+    catch (reason) { setError(reason.message); }
+    finally { setBusy(false); }
+  }
+  useEffect(() => { load(1); }, []);
+  async function clean(group) {
+    const keeperId = keepers[group.hash] || group.keeperFileId;
+    const keeper = group.files.find((file) => file.id === keeperId) || group.files[0];
+    const drop = group.files.filter((file) => file.id !== keeper.id && !file.inArchive);
+    if (!drop.length || !window.confirm(`Move ${drop.length} visually matching image file(s) to .dedup-trash?\n\nThis group matched pHash distance 0 and still requires your review.`)) return;
+    setBusy(true); setError("");
+    try {
+      const sources = [...new Set(group.imageIds.filter((id) => id !== keeper.imageId))];
+      if (sources.length) { await mergeImages(keeper.imageId, sources); await deleteImages(sources); }
+      const prepared = await pruneImageFiles(keeper.imageId, drop.map((file) => file.id), "trash");
+      await finalizeImageFileAction(prepared.token);
+      await load(page);
+    } catch (reason) { setError(reason.message); setBusy(false); }
+  }
+  const pages = Math.max(1, Math.ceil((result?.total || 0) / 25));
+  return <div className="dm-page"><header className="dm-header"><div><div className="dm-title"><Copy size={23} /><h1>Duplicate Images</h1></div><p>Review-only exact pHash groups. Cleanup always uses recoverable trash; archive entries are protected.</p></div><button className="dm-primary" disabled={busy} onClick={() => load(page)}>{busy ? "Working…" : "Refresh"}</button></header>
+    {error && <div className="dm-alert dm-error"><AlertTriangle size={17} />{error}</div>}
+    <div className="dm-summary"><span><strong>{result?.total || 0}</strong> groups</span><span>Page {page} of {pages}</span></div>
+    <div className="dm-groups">{(result?.groups || []).map((group) => <section className="dm-group" key={group.hash}><header><div><strong>{group.files.length} copies</strong><span>{formatBytes(group.freeableBytes)} recoverable</span></div><button className="dm-danger" disabled={busy} onClick={() => clean(group)}>Clean reviewed group</button></header><div className="dm-video-grid">{group.files.map((file) => <article className={`dm-video-card ${(keepers[group.hash] || group.keeperFileId) === file.id ? "dm-selected" : ""}`} key={file.id}><div className="dm-media"><button className="dm-check" disabled={file.inArchive} onClick={() => setKeepers((value) => ({ ...value, [group.hash]: file.id }))}><Check size={14} /></button><img src={`/api/stream/image/${file.imageId}/thumbnail?max=400`} alt="" loading="lazy" /></div><div className="dm-video-info"><strong>{file.width}×{file.height}</strong><div className="dm-facts"><span>{formatBytes(file.size)}</span>{file.inArchive && <span>archive—protected</span>}</div><p className="dm-file-path" title={file.path}>{displayPath(file.path)}</p></div></article>)}</div></section>)}</div>
+    <nav className="dm-pagination"><button disabled={page <= 1 || busy} onClick={() => load(page - 1)}><ArrowLeft size={17} /></button><span>Page {page} of {pages}</span><button disabled={page >= pages || busy} onClick={() => load(page + 1)}><ArrowRight size={17} /></button></nav>
+  </div>;
+}
+
 export function DuplicateManagerSettingsPanel() {
   const [settings, setSettings] = useState(normalizeSettings(DEFAULT_SETTINGS));
   const [loading, setLoading] = useState(true);
@@ -774,16 +816,47 @@ export function DuplicateManagerSettingsPanel() {
   return <div className="dm-settings">
     <div className="dm-settings-heading"><div><h3><Settings2 size={19} />Duplicate Manager</h3><p>Defaults used when the improved Duplicate Finder opens.</p></div><button className="dm-primary" disabled={saving} onClick={save}>{saving ? <Loader2 className="dm-spin" size={16} /> : <Save size={16} />}Save</button></div>
     <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label><label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label><DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
-    <section><h4>Preferred codecs</h4><p>Best to worst, separated by commas.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>
+    <section><h4>Ranking mode</h4><p>Balanced explains codec-aware quality decisions; custom uses your ordered rules.</p><select value={settings.rankingMode} onChange={(event) => update({ rankingMode: event.target.value })}><option value="balanced">Balanced quality (recommended)</option><option value="custom">Custom rule order</option></select></section>
+    <section><h4>Preferred codecs</h4><p>Used by custom ranking, best to worst.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>
     <section><h4>Default folder scope</h4><p>Search all folders, only selected folders, or everything except selected folders.</p><FolderScopeControl settings={settings} onChange={update} onPick={() => setFolderOpen(true)} settingsView /></section>
     <section><h4>Metadata transfer</h4><p>Defaults used when confirming bulk deletion.</p><label className="dm-checkbox-row"><input type="checkbox" checked={settings.copyMissingMetadata} onChange={(event) => update({ copyMissingMetadata: event.target.checked })} /><span><strong>Copy missing metadata from deleted files</strong><small>Merge missing editable metadata, relationships, ratings, markers, and cover artwork into the keeper.</small></span></label><label className="dm-checkbox-row"><input type="checkbox" checked={settings.overwriteConflictingMetadata} disabled={!settings.copyMissingMetadata} onChange={(event) => update({ overwriteConflictingMetadata: event.target.checked })} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer metadata from deleted files when both videos have a value.</small></span></label></section>
-    <section><h4>Keeper priority</h4><p>Rules are evaluated top to bottom. The first difference determines the recommended keeper.</p><div className="dm-rule-list">{settings.keeperRules.map((rule, index) => <div key={rule}><span>{index + 1}. {RULE_LABELS[rule]}</span><div><button className="dm-icon-button" disabled={index === 0} onClick={() => moveRule(index, -1)}><ArrowUp size={15} /></button><button className="dm-icon-button" disabled={index === settings.keeperRules.length - 1} onClick={() => moveRule(index, 1)}><ArrowDown size={15} /></button><button className="dm-icon-button" onClick={() => removeRule(index)}><X size={15} /></button></div></div>)}</div>{availableRules.length > 0 && <select value="" onChange={(event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] })}><option value="">Add tie-break rule...</option>{availableRules.map((rule) => <option key={rule} value={rule}>{RULE_LABELS[rule]}</option>)}</select>}</section>
+    {settings.rankingMode === "custom" && <section><h4>Keeper priority</h4><p>Rules are evaluated top to bottom.</p><div className="dm-rule-list">{settings.keeperRules.map((rule, index) => <div key={rule}><span>{index + 1}. {RULE_LABELS[rule]}</span><div><button className="dm-icon-button" disabled={index === 0} onClick={() => moveRule(index, -1)}><ArrowUp size={15} /></button><button className="dm-icon-button" disabled={index === settings.keeperRules.length - 1} onClick={() => moveRule(index, 1)}><ArrowDown size={15} /></button><button className="dm-icon-button" onClick={() => removeRule(index)}><X size={15} /></button></div></div>)}</div>{availableRules.length > 0 && <select value="" onChange={(event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] })}><option value="">Add tie-break rule...</option>{availableRules.map((rule) => <option key={rule} value={rule}>{RULE_LABELS[rule]}</option>)}</select>}</section>}
+    <TrashManager />
     {message && <div className={`dm-alert ${message === "Settings saved." ? "dm-success" : "dm-error"}`}>{message}</div>}
     {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(includedPaths) => { update({ includedPaths }); setFolderOpen(false); }} />}
   </div>;
 }
 
-export default { components: { DuplicateManagerPage, DuplicateManagerSettingsPanel } };
+function TrashManager() {
+  const [trash, setTrash] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  async function refresh() {
+    setBusy(true); setMessage("");
+    try { setTrash(await listDuplicateTrash()); }
+    catch (reason) { setMessage(reason.message || "Could not load recovery trash."); }
+    finally { setBusy(false); }
+  }
+  async function restore(path) {
+    setBusy(true); setMessage("");
+    try { await restoreDuplicateTrash(path); await refresh(); }
+    catch (reason) { setMessage(reason.message || "Could not restore that file."); setBusy(false); }
+  }
+  async function empty() {
+    if (!window.confirm("Permanently delete every file currently managed by Duplicate Manager recovery trash?")) return;
+    setBusy(true); setMessage("");
+    try { const result = await emptyDuplicateTrash(); await refresh(); setMessage(`Permanently deleted ${result.deleted || 0} file(s), freeing ${formatBytes(result.freed || 0)}.`); }
+    catch (reason) { setMessage(reason.message || "Could not empty recovery trash."); setBusy(false); }
+  }
+  return <section><h4>Recovery trash</h4><p>Files moved by Duplicate Manager remain beside their original folders until you restore or permanently empty them.</p>
+    <div className="dm-dialog-actions"><button className="dm-secondary" disabled={busy} onClick={refresh}>{busy ? <Loader2 className="dm-spin" size={15} /> : null}Refresh</button>{(trash?.count || 0) > 0 && <button className="dm-danger" disabled={busy} onClick={empty}>Empty permanently</button>}</div>
+    {trash && <p><strong>{trash.count || 0}</strong> files ({formatBytes(trash.bytes || 0)})</p>}
+    {(trash?.entries || []).map((entry) => <div className="dm-rule-list" key={entry.path}><div><span title={entry.originalPath}>{displayPath(entry.originalPath)} · {formatBytes(entry.size)}</span><button className="dm-secondary" disabled={busy} onClick={() => restore(entry.path)}>Restore</button></div></div>)}
+    {message && <div className="dm-alert">{message}</div>}
+  </section>;
+}
+
+export default { components: { DuplicateManagerPage, DuplicateImagesPage, DuplicateManagerSettingsPanel } };
 
 function deletionProgressText(progress) {
   if (!progress?.total) return "Preparing deletion. This might take a while.";

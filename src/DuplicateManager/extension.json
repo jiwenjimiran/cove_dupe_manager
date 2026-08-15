@@ -1,8 +1,8 @@
 {
   "id": "io.github.jiwenjimiran.duplicate-manager",
   "name": "Duplicate Manager",
-  "version": "1.9.7",
-  "description": "Advanced duplicate review, comparison, selection, and bulk deletion for Cove videos.",
+  "version": "2.0.0",
+  "description": "Safe, explainable duplicate review and cleanup for Cove videos and images.",
   "author": "jiwenji",
   "url": "https://github.com/jiwenjimiran/cove_dupe_manager",
   "categories": [
@@ -12,7 +12,7 @@
     "search",
     "ui"
   ],
-  "minCoveVersion": "1.0.0",
+  "minCoveVersion": "1.1.0",
   "entryDll": "Cove.DuplicateManager.dll",
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",

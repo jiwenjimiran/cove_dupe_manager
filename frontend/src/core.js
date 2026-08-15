@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   includedPaths: [],
   copyMissingMetadata: true,
   overwriteConflictingMetadata: false,
+  rankingMode: "balanced",
+  settingsVersion: 2,
 });
 
 const SEARCH_PARAM_NAMES = Object.freeze([
@@ -62,6 +64,9 @@ export function normalizeSettings(value) {
     includedPaths: incomingPaths,
     copyMissingMetadata: incoming.copyMissingMetadata !== false,
     overwriteConflictingMetadata: incoming.copyMissingMetadata !== false && incoming.overwriteConflictingMetadata === true,
+    rankingMode: incoming.rankingMode === "custom" ||
+      (incoming.rankingMode == null && Array.isArray(incoming.keeperRules)) ? "custom" : "balanced",
+    settingsVersion: 2,
   };
 }
 
@@ -161,7 +166,84 @@ export function filterGroups(groups, query) {
 
 export function chooseKeeper(group, settings) {
   const normalized = normalizeSettings(settings);
-  return [...(group || [])].sort((left, right) => compareVideos(left, right, normalized))[0] || null;
+  return rankGroup(group, normalized)[0] || null;
+}
+
+const CODEC_FACTORS = Object.freeze({
+  vvc: 2.4, h266: 2.4, av1: 2, hevc: 1.7, h265: 1.7, hvc1: 1.7, hev1: 1.7,
+  vp9: 1.5, h264: 1, avc: 1, avc1: 1, vp8: .85, vc1: .8, wmv3: .8,
+  mpeg4: .65, divx: .65, xvid: .65, mpeg2: .45, mpeg1: .45, prores: .25, mjpeg: .25,
+});
+
+function bucket(value, best, steps, floor = 0) {
+  if (!(best > 0)) return 0;
+  const difference = best - value;
+  if (difference <= floor) return 0;
+  const loss = difference / best;
+  const index = steps.findIndex((step) => loss <= step);
+  return index < 0 ? steps.length : index;
+}
+
+export function balancedRankSteps(group) {
+  const members = group || [];
+  const quality = (video) => {
+    const file = primaryFile(video);
+    return Number(file?.bitRate || 0) * (CODEC_FACTORS[normalizeCodec(file?.videoCodec)] || 1);
+  };
+  const best = new Map();
+  for (const video of members) {
+    const pixels = fileResolution(primaryFile(video));
+    const current = best.get(pixels) || { quality: 0, duration: 0 };
+    current.quality = Math.max(current.quality, quality(video));
+    current.duration = Math.max(current.duration, Number(primaryFile(video)?.duration || 0));
+    best.set(pixels, current);
+  }
+  return [
+    { name: "resolution", value: (v) => fileResolution(primaryFile(v)), descending: true },
+    { name: "picture", value: (v) => bucket(quality(v), best.get(fileResolution(primaryFile(v)))?.quality, [.02, .12, .30]), descending: false },
+    { name: "length", value: (v) => bucket(Number(primaryFile(v)?.duration || 0), best.get(fileResolution(primaryFile(v)))?.duration, [.01, .05, .20], 2), descending: false },
+    { name: "metadata", value: metadataCount, descending: true },
+    { name: "disk space", value: (v) => Number(primaryFile(v)?.size || 0), descending: false },
+    { name: "age", value: (v) => Date.parse(v?.createdAt || primaryFile(v)?.modTime || 0) || 0, descending: false },
+    { name: "id", value: (v) => Number(v?.id || 0), descending: false },
+  ];
+}
+
+export function rankGroup(group, settings) {
+  const normalized = normalizeSettings(settings);
+  if (normalized.rankingMode === "custom") return [...(group || [])].sort((a, b) => compareVideos(a, b, normalized));
+  const steps = balancedRankSteps(group);
+  return [...(group || [])].sort((a, b) => {
+    for (const step of steps) {
+      const delta = step.value(a) - step.value(b);
+      if (delta) return step.descending ? -delta : delta;
+    }
+    return 0;
+  });
+}
+
+export function keeperReason(group, settings) {
+  const ranked = rankGroup(group, settings);
+  if (ranked.length < 2) return { step: "single", text: "Only one candidate." };
+  const steps = normalizeSettings(settings).rankingMode === "custom"
+    ? normalizeSettings(settings).keeperRules.map((name) => ({ name, value: (v) => ruleValue(v, name, normalizeSettings(settings)), descending: true }))
+    : balancedRankSteps(group);
+  for (const step of steps) if (step.value(ranked[0]) !== step.value(ranked[1]))
+    return { step: step.name, runnerUpId: ranked[1].id, text: `Kept #${ranked[0].id} over #${ranked[1].id}: ${step.name} was the first meaningful difference.` };
+  return { step: "tie", text: "No measured property separated the candidates." };
+}
+
+export function groupRisk(group) {
+  const members = group || [];
+  if (members.length < 2) return { score: 0, notes: [] };
+  const durations = members.map((v) => Number(primaryFile(v)?.duration || 0));
+  const shortest = Math.min(...durations), longest = Math.max(...durations);
+  let factor = 1; const notes = [];
+  if (members.length > 4) notes.push(`${members.length} videos in one group`);
+  if (shortest > 0 && shortest < 30) { factor += 2; notes.push(`shortest clip is ${Math.round(shortest)}s`); }
+  if (longest > 0 && (longest - shortest) / longest > .25) { factor++; notes.push("durations differ by over 25%"); }
+  if (new Set(members.map((v) => fileResolution(primaryFile(v)))).size > 1) { factor++; notes.push("mixed resolutions"); }
+  return { score: Math.round((members.length - 1) * factor), notes };
 }
 
 export function autoSelectForDeletion(groups, settings) {

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Cove.Plugins;
+using Cove.Sdk;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -8,7 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Cove.DuplicateManager;
 
-public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IStatefulExtension, IApiExtension
+public sealed partial class DuplicateManagerExtension : IExtension, IUIExtension, IStatefulExtension, IApiExtension
 {
     public const string ExtensionId = "io.github.jiwenjimiran.duplicate-manager";
     private const string SettingsKey = "settings";
@@ -22,13 +23,13 @@ public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IState
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "1.9.7";
-    public string? Description => "Advanced duplicate review, comparison, selection, and bulk deletion for Cove videos.";
+    public string Version => "2.0.0";
+    public string? Description => "Safe, explainable duplicate review and cleanup for Cove videos and images.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";
     public string? IconUrl => null;
     public IReadOnlyList<string> Categories => ["tools", "library", "content-management", "search", "ui"];
-    public string? MinCoveVersion => "1.0.0";
+    public string? MinCoveVersion => "1.1.0";
     public IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>();
 
     public void ConfigureServices(IServiceCollection services, ExtensionContext context) { }
@@ -43,6 +44,18 @@ public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IState
                 ExtensionId: ExtensionId,
                 ComponentName: "DuplicateManagerPage",
                 Priority: 500)
+        ],
+        Pages =
+        [
+            new UIPageDefinition(
+                Route: "extensions/duplicate-images",
+                Label: "Duplicate Images",
+                Icon: "Images",
+                ShowInNav: true,
+                NavOrder: 91,
+                RequiredPermission: "images.read",
+                ComponentName: "DuplicateImagesPage",
+                ExtensionId: ExtensionId)
         ],
         SettingsPanels =
         [
@@ -61,7 +74,7 @@ public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IState
         endpoints.MapGet("/api/ext/duplicate-manager/settings", async (HttpContext ctx) =>
         {
             return Results.Json(await LoadSettingsAsync(ctx.RequestAborted), JsonOptions);
-        });
+        }).RequireCovePermission("videos.read");
 
         endpoints.MapPut("/api/ext/duplicate-manager/settings", async (HttpContext ctx) =>
         {
@@ -71,7 +84,9 @@ public sealed class DuplicateManagerExtension : IExtension, IUIExtension, IState
                 return Results.Problem("Extension storage is not initialized.");
             await _store.SetAsync(SettingsKey, JsonSerializer.Serialize(settings, JsonOptions), ctx.RequestAborted);
             return Results.Json(settings, JsonOptions);
-        });
+        }).RequireCovePermission("videos.write");
+
+        MapMergeEndpoints(endpoints);
     }
 
     private async Task<DuplicateManagerSettings> LoadSettingsAsync(CancellationToken ct)
@@ -114,9 +129,12 @@ public sealed class DuplicateManagerSettings
     public List<string> IncludedPaths { get; set; } = [];
     public bool CopyMissingMetadata { get; set; } = true;
     public bool OverwriteConflictingMetadata { get; set; } = false;
+    public string RankingMode { get; set; } = "balanced";
+    public int SettingsVersion { get; set; }
 
     public static DuplicateManagerSettings Normalize(DuplicateManagerSettings? value)
     {
+        var isNewInstall = value is null;
         var settings = value ?? new DuplicateManagerSettings();
         settings.MatchType = settings.MatchType?.Trim().ToLowerInvariant() is "phash" or "title" or "remoteid"
             ? settings.MatchType.Trim().ToLowerInvariant()
@@ -143,6 +161,10 @@ public sealed class DuplicateManagerSettings
             : settings.IncludedPaths.Count > 0 ? "include" : "all";
         if (!settings.CopyMissingMetadata)
             settings.OverwriteConflictingMetadata = false;
+        settings.RankingMode = !isNewInstall && settings.SettingsVersion < 2
+            ? "custom"
+            : settings.RankingMode?.Trim().ToLowerInvariant() == "custom" ? "custom" : "balanced";
+        settings.SettingsVersion = 2;
         return settings;
     }
 

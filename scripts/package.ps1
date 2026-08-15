@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "1.9.7",
+    [string]$Version = "2.0.0",
     [switch]$NoRestore
 )
 
@@ -10,6 +10,18 @@ $frontend = Join-Path $root "frontend"
 $project = Join-Path $root "src\DuplicateManager\DuplicateManager.csproj"
 $publishDir = Join-Path $root "artifacts\extension"
 $zipPath = Join-Path $root "artifacts\io.github.jiwenjimiran.duplicate-manager-$Version.zip"
+
+if (-not $env:COVE_HOST_ASSEMBLY_DIR) {
+    $cove = Get-Process Cove -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cove) {
+        $core = $cove.Modules | Where-Object ModuleName -eq "Cove.Core.dll" | Select-Object -First 1
+        if ($core) { $env:COVE_HOST_ASSEMBLY_DIR = Split-Path -Parent $core.FileName }
+    }
+}
+if (-not $env:COVE_HOST_ASSEMBLY_DIR) {
+    throw "Cove 1.1.0 must be running, or COVE_HOST_ASSEMBLY_DIR must point to its extracted assemblies."
+}
+$hostArg = "-p:CoveHostAssemblyDir=$env:COVE_HOST_ASSEMBLY_DIR"
 
 Push-Location $frontend
 try {
@@ -30,12 +42,12 @@ if (Test-Path -LiteralPath $zipPath) {
 }
 
 if (-not $NoRestore) {
-    dotnet restore $project -p:UseLocalCovePlugins=false
+    dotnet restore $project -p:UseLocalCovePlugins=false $hostArg
     if ($LASTEXITCODE -ne 0) { throw "Extension restore failed with exit code $LASTEXITCODE." }
 }
-dotnet build $project -c $Configuration -p:UseLocalCovePlugins=false --no-restore
+dotnet build $project -c $Configuration -p:UseLocalCovePlugins=false $hostArg --no-restore
 if ($LASTEXITCODE -ne 0) { throw "Extension build failed with exit code $LASTEXITCODE." }
-dotnet publish $project -c $Configuration -o $publishDir -p:UseLocalCovePlugins=false --no-build --no-restore
+dotnet publish $project -c $Configuration -o $publishDir -p:UseLocalCovePlugins=false $hostArg --no-build --no-restore
 if ($LASTEXITCODE -ne 0) { throw "Extension publish failed with exit code $LASTEXITCODE." }
 Compress-Archive -Path (Join-Path $publishDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
 Write-Output $zipPath

@@ -1,4 +1,4 @@
-import { copyVideoMetadata, deleteVideo, getVideo, ApiRequestError, isAuthenticationRequired } from "./api.js";
+import { copyVideoMetadata, deleteVideo, finalizeFileAction, getVideo, mergeVideoEngagement, prepareFileAction, ApiRequestError, isAuthenticationRequired } from "./api.js";
 import { metadataCount } from "./core.js";
 
 export function buildDeletionQueue(plans, { overwriteConflicts = false } = {}) {
@@ -25,6 +25,9 @@ export async function runDeletionJob({
   copyMetadata = copyVideoMetadata,
   removeVideo = deleteVideo,
   loadVideo = getVideo,
+  mergeEngagement = mergeVideoEngagement,
+  prepareFiles = prepareFileAction,
+  finalizeFiles = finalizeFileAction,
 } = {}) {
   const items = [...(queue || [])];
   const result = {
@@ -39,6 +42,7 @@ export async function runDeletionJob({
 
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
+    let prepared = null;
     if (options.copyMetadata) {
       onProgress(progress("metadata", index, items.length, item, result));
       try {
@@ -53,9 +57,21 @@ export async function runDeletionJob({
       }
     }
 
+    if (options.preserveEngagement || (options.fileMode && options.fileMode !== "records")) {
+      try {
+        if (options.preserveEngagement) await mergeEngagement(item.targetId, [item.sourceId]);
+        if (options.fileMode && options.fileMode !== "records")
+          prepared = await prepareFiles("video", item.sourceId, options.fileMode);
+      } catch (reason) {
+        result.failed.push({ sourceId: item.sourceId, stage: "preparation", message: reason.message || "Could not prepare safe cleanup." });
+        continue;
+      }
+    }
+
     onProgress(progress("deleting", index, items.length, item, result));
     try {
-      await removeVideo(item.sourceId, options);
+      await removeVideo(item.sourceId, { ...options, deleteFiles: false });
+      if (prepared?.token) await finalizeFiles(prepared.token);
       result.completedIds.push(item.sourceId);
       onProgress(progress("deleted", index, items.length, item, result));
     } catch (reason) {

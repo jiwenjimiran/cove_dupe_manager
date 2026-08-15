@@ -10,6 +10,8 @@ import {
   duplicateSearchFromUrl,
   duplicateSearchToUrl,
   filterGroups,
+  groupRisk,
+  keeperReason,
   metadataCopyCount,
   metadataCount,
   normalizeSettings,
@@ -243,6 +245,25 @@ test("default keeper order prefers resolution, codec, bitrate, then duration", (
   assert.equal(chooseKeeper([video(3, { width: 3840, duration: 30 }), longSparse], {}).id, 3);
   assert.equal(chooseKeeper([video(4, { codec: "hevc", duration: 30 }), longSparse], {}).id, 4);
   assert.equal(chooseKeeper([video(5, { bitRate: 9000, duration: 30 }), longSparse], {}).id, 5);
+});
+
+test("balanced ranking compares codec-adjusted picture quality before disk size", () => {
+  const h264 = video(1, { width: 1920, height: 1080, codec: "h264", bitRate: 8_400_000, size: 900 });
+  const hevc = video(2, { width: 1920, height: 1080, codec: "hevc", bitRate: 5_000_000, size: 600 });
+  assert.equal(chooseKeeper([h264, hevc], { rankingMode: "balanced" }).id, 2);
+  assert.equal(keeperReason([h264, hevc], { rankingMode: "balanced" }).step, "disk space");
+});
+
+test("risk scoring flags large visually mixed groups", () => {
+  const group = [
+    video(1, { duration: 20, width: 640 }), video(2, { duration: 120, width: 1920 }),
+    video(3, { duration: 120, width: 1920 }), video(4, { duration: 120, width: 1920 }),
+    video(5, { duration: 120, width: 1920 }),
+  ];
+  const risk = groupRisk(group);
+  assert.ok(risk.score >= 10);
+  assert.ok(risk.notes.some((note) => note.includes("durations differ")));
+  assert.ok(risk.notes.some((note) => note.includes("mixed resolutions")));
 });
 
 test("metadata merge fills scalar gaps and unions relationships", () => {
