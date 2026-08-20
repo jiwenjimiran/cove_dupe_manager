@@ -13,3 +13,10 @@ test("runtime code cannot create or manage dedup trash", async () => {
   for (const forbidden of [".dedup-trash", "/files/prepare", "/files/finalize", "/trash/restore", "/trash/empty"])
     assert.equal(source.includes(forbidden), false, `runtime code still contains ${forbidden}`);
 });
+
+test("deletion progress does not expose internal stages or per-item completed counts", async () => {
+  const source = await readFile(new URL("../src/index.jsx", import.meta.url), "utf8");
+  for (const forbidden of ["Copying metadata", "completed. This might take a while", "progress.stage === \"metadata\""])
+    assert.equal(source.includes(forbidden), false, `progress UI still contains ${forbidden}`);
+  assert.match(source, /Deleting video .*dm-progress-number.* of .*This might take a while\./s);
+});

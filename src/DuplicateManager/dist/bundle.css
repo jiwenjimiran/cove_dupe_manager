@@ -171,6 +171,12 @@ button:disabled {
   background: rgba(133, 77, 14, .2);
   color: #fde68a;
 }
+.dm-progress-number {
+  display: inline-block;
+  min-width: calc(var(--dm-progress-digits) * 1ch);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 .dm-result-toolbar {
   display: flex;
   align-items: center;

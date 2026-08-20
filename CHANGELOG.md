@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.2 - 2026-08-20
+
+- Keep deletion progress text stable across metadata and deletion stages, updating only the current video number.
+
 ## 2.0.1 - 2026-08-20
 
 - Restore the 1.9.7 metadata-first video deletion flow and pass permanent source-file deletion directly to Cove.

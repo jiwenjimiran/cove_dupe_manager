@@ -309,6 +309,13 @@ export function formatDuration(seconds) {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+export function deletionProgress(progress) {
+  const total = Math.max(0, Math.trunc(Number(progress?.total) || 0));
+  if (total === 0) return null;
+  const current = Math.min(total, Math.max(1, Math.trunc(Number(progress?.current) || 1)));
+  return { current, total, digits: String(total).length };
+}
+
 export function displayPath(value, maxLength = 144) {
   const path = String(value || "");
   return path.length <= maxLength ? path : `${path.slice(0, Math.max(1, maxLength - 3))}...`;

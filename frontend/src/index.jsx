@@ -7,7 +7,7 @@ import {
 import { deleteImages, findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, mergeImages, pruneImageFiles, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
-  duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
+  deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
   displayPath, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
   parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
@@ -258,7 +258,7 @@ export function DuplicateManagerPage({ onNavigate }) {
 
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
     {deleteNotice && <div className="dm-alert dm-warning"><AlertTriangle size={17} /><span>{deleteNotice}</span><button onClick={() => setDeleteNotice("")}><X size={15} /></button></div>}
-    {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />{deletionProgressText(deleteProgress)}</div>}
+    {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} /><DeletionProgress progress={deleteProgress} /></div>}
     {deleteStatus === "complete" && <div className="dm-alert dm-success"><Check size={17} />Deletion finished. {deleteResult?.completedIds?.length || 0} videos deleted.</div>}
     {deleteStatus === "partial" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />Deletion finished with errors. {deleteResult?.completedIds?.length || 0} deleted; {deleteResult?.failed?.length || 0} kept.</div>}
     {deleteStatus === "auth_required" && <div className="dm-alert dm-error"><AlertTriangle size={17} />Authentication could not be refreshed. {deleteResult?.completedIds?.length || 0} deleted; {deleteResult?.failed?.length || 0} previously failed; {deleteResult?.interrupted ? 1 : 0} interrupted; {deleteResult?.notAttemptedIds?.length || 0} not attempted.</div>}
@@ -827,10 +827,10 @@ export function DuplicateManagerSettingsPanel() {
 
 export default { components: { DuplicateManagerPage, DuplicateImagesPage, DuplicateManagerSettingsPanel } };
 
-function deletionProgressText(progress) {
-  if (!progress?.total) return "Preparing deletion. This might take a while.";
-  const action = progress.stage === "metadata" ? "Copying metadata for" : progress.stage === "deleting" ? "Deleting" : "Deleted";
-  return `${action} video ${progress.current} of ${progress.total}. ${progress.completed} completed. This might take a while.`;
+function DeletionProgress({ progress }) {
+  const value = deletionProgress(progress);
+  if (!value) return <>Preparing deletion. This might take a while.</>;
+  return <>Deleting video <span className="dm-progress-number" style={{ "--dm-progress-digits": value.digits }}>{value.current}</span> of {value.total}. This might take a while.</>;
 }
 
 function deletionResultNotice(result) {

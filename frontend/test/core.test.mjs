@@ -6,6 +6,7 @@ import {
   buildMergedVideoUpdate,
   chooseKeeper,
   comparisonPlayback,
+  deletionProgress,
   displayPath,
   duplicateSearchFromUrl,
   duplicateSearchToUrl,
@@ -23,6 +24,13 @@ import {
   transcodeResolutionCandidates,
   validateKeeperSafety,
 } from "../src/core.js";
+
+test("deletion progress is stable across internal stages", () => {
+  const stages = ["metadata", "deleting", "deleted"];
+  const values = stages.map((stage) => deletionProgress({ stage, current: 32, total: 845, completed: 31 }));
+  assert.deepEqual(values, Array(3).fill({ current: 32, total: 845, digits: 3 }));
+  assert.equal(deletionProgress({ total: 0 }), null);
+});
 
 function video(id, options = {}) {
   return {
