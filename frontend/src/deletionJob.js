@@ -1,4 +1,4 @@
-import { copyVideoMetadata, deleteVideo, finalizeFileAction, getVideo, mergeVideoEngagement, prepareFileAction, ApiRequestError, isAuthenticationRequired } from "./api.js";
+import { copyVideoMetadata, deleteVideo, getVideo, mergeVideoEngagement, ApiRequestError, isAuthenticationRequired } from "./api.js";
 import { metadataCount } from "./core.js";
 
 export function buildDeletionQueue(plans, { overwriteConflicts = false } = {}) {
@@ -26,8 +26,6 @@ export async function runDeletionJob({
   removeVideo = deleteVideo,
   loadVideo = getVideo,
   mergeEngagement = mergeVideoEngagement,
-  prepareFiles = prepareFileAction,
-  finalizeFiles = finalizeFileAction,
 } = {}) {
   const items = [...(queue || [])];
   const result = {
@@ -42,7 +40,6 @@ export async function runDeletionJob({
 
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
-    let prepared = null;
     if (options.copyMetadata) {
       onProgress(progress("metadata", index, items.length, item, result));
       try {
@@ -57,21 +54,20 @@ export async function runDeletionJob({
       }
     }
 
-    if (options.preserveEngagement || (options.fileMode && options.fileMode !== "records")) {
-      try {
-        if (options.preserveEngagement) await mergeEngagement(item.targetId, [item.sourceId]);
-        if (options.fileMode && options.fileMode !== "records")
-          prepared = await prepareFiles("video", item.sourceId, options.fileMode);
-      } catch (reason) {
-        result.failed.push({ sourceId: item.sourceId, stage: "preparation", message: reason.message || "Could not prepare safe cleanup." });
-        continue;
-      }
+    try {
+      await mergeEngagement(item.targetId, [item.sourceId]);
+    } catch (reason) {
+      if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
+      result.failed.push({ sourceId: item.sourceId, stage: "engagement", message: reason.message || "Could not preserve engagement metadata." });
+      continue;
     }
 
     onProgress(progress("deleting", index, items.length, item, result));
     try {
-      await removeVideo(item.sourceId, { ...options, deleteFiles: false });
-      if (prepared?.token) await finalizeFiles(prepared.token);
+      await removeVideo(item.sourceId, {
+        deleteFiles: options.deleteFiles === true,
+        deleteGenerated: options.deleteGenerated === true,
+      });
       result.completedIds.push(item.sourceId);
       onProgress(progress("deleted", index, items.length, item, result));
     } catch (reason) {

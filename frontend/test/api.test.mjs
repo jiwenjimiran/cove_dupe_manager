@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, findDuplicates,
+  AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, deleteVideo, findDuplicates,
   loadTranscodeResolutions, mediaUrls, request,
 } from "../src/api.js";
 
@@ -255,6 +255,22 @@ test("duplicate requests pass Cove's title and remote ID match types through", a
   }
   assert.equal(new URL(paths[0], "http://cove.test").searchParams.get("matchType"), "title");
   assert.equal(new URL(paths[1], "http://cove.test").searchParams.get("matchType"), "remoteid");
+});
+
+test("permanent deletion passes the source-file choice directly to Cove", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (path, options = {}) => {
+    assert.equal(path, "/api/videos/destroy");
+    requestBody = JSON.parse(options.body);
+    return { ok: true, status: 200, text: async () => JSON.stringify({ deleted: 1 }), statusText: "OK" };
+  };
+  try {
+    await deleteVideo(42, { deleteFiles: true, deleteGenerated: true });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(requestBody, { ids: [42], deleteFiles: true, deleteGenerated: true });
 });
 
 test("metadata copy updates the keeper before recreating ratings and markers", async () => {

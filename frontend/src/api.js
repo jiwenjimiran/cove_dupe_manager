@@ -166,38 +166,6 @@ export function mergeVideoEngagement(targetId, sourceIds) {
   });
 }
 
-export function prepareFileAction(mediaType, entityId, mode, fileIds) {
-  return request("/api/ext/duplicate-manager/files/prepare", {
-    method: "POST", body: JSON.stringify({ mediaType, entityId, mode, fileIds }),
-  });
-}
-
-export function finalizeFileAction(token) {
-  return request("/api/ext/duplicate-manager/files/finalize", {
-    method: "POST", body: JSON.stringify({ token }),
-  });
-}
-
-export function finalizeImageFileAction(token) {
-  return request("/api/ext/duplicate-manager/images/files/finalize", {
-    method: "POST", body: JSON.stringify({ token }),
-  });
-}
-
-export function listDuplicateTrash() {
-  return request("/api/ext/duplicate-manager/trash");
-}
-
-export function restoreDuplicateTrash(path) {
-  return request("/api/ext/duplicate-manager/trash/restore", {
-    method: "POST", body: JSON.stringify({ token: path }),
-  });
-}
-
-export function emptyDuplicateTrash() {
-  return request("/api/ext/duplicate-manager/trash/empty", { method: "POST" });
-}
-
 export function findDuplicateImages({ page = 1, pageSize = 25, minBytes = 0 } = {}) {
   return request(`/api/ext/duplicate-manager/images/duplicates?page=${page}&pageSize=${pageSize}&minBytes=${minBytes}`);
 }
@@ -208,9 +176,9 @@ export function mergeImages(targetImageId, sourceImageIds) {
   });
 }
 
-export function pruneImageFiles(imageId, fileIds, mode = "trash") {
+export function pruneImageFiles(imageId, fileIds) {
   return request("/api/ext/duplicate-manager/images/prune", {
-    method: "POST", body: JSON.stringify({ mediaType: "image", entityId: imageId, mode, fileIds }),
+    method: "POST", body: JSON.stringify({ imageId, fileIds }),
   });
 }
 

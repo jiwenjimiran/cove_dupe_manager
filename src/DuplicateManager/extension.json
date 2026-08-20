@@ -1,7 +1,7 @@
 {
   "id": "io.github.jiwenjimiran.duplicate-manager",
   "name": "Duplicate Manager",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Safe, explainable duplicate review and cleanup for Cove videos and images.",
   "author": "jiwenji",
   "url": "https://github.com/jiwenjimiran/cove_dupe_manager",

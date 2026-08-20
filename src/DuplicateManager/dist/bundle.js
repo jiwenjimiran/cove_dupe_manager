@@ -779,36 +779,6 @@ function mergeVideoEngagement(targetId, sourceIds) {
     body: JSON.stringify({ targetId, sourceIds })
   });
 }
-function prepareFileAction(mediaType, entityId, mode, fileIds) {
-  return request("/api/ext/duplicate-manager/files/prepare", {
-    method: "POST",
-    body: JSON.stringify({ mediaType, entityId, mode, fileIds })
-  });
-}
-function finalizeFileAction(token) {
-  return request("/api/ext/duplicate-manager/files/finalize", {
-    method: "POST",
-    body: JSON.stringify({ token })
-  });
-}
-function finalizeImageFileAction(token) {
-  return request("/api/ext/duplicate-manager/images/files/finalize", {
-    method: "POST",
-    body: JSON.stringify({ token })
-  });
-}
-function listDuplicateTrash() {
-  return request("/api/ext/duplicate-manager/trash");
-}
-function restoreDuplicateTrash(path) {
-  return request("/api/ext/duplicate-manager/trash/restore", {
-    method: "POST",
-    body: JSON.stringify({ token: path })
-  });
-}
-function emptyDuplicateTrash() {
-  return request("/api/ext/duplicate-manager/trash/empty", { method: "POST" });
-}
 function findDuplicateImages({ page = 1, pageSize = 25, minBytes = 0 } = {}) {
   return request(`/api/ext/duplicate-manager/images/duplicates?page=${page}&pageSize=${pageSize}&minBytes=${minBytes}`);
 }
@@ -818,10 +788,10 @@ function mergeImages(targetImageId, sourceImageIds) {
     body: JSON.stringify({ targetImageId, sourceImageIds })
   });
 }
-function pruneImageFiles(imageId, fileIds, mode = "trash") {
+function pruneImageFiles(imageId, fileIds) {
   return request("/api/ext/duplicate-manager/images/prune", {
     method: "POST",
-    body: JSON.stringify({ mediaType: "image", entityId: imageId, mode, fileIds })
+    body: JSON.stringify({ imageId, fileIds })
   });
 }
 function deleteImages(ids) {
@@ -1020,9 +990,7 @@ async function runDeletionJob({
   copyMetadata = copyVideoMetadata,
   removeVideo = deleteVideo,
   loadVideo = getVideo,
-  mergeEngagement = mergeVideoEngagement,
-  prepareFiles = prepareFileAction,
-  finalizeFiles = finalizeFileAction
+  mergeEngagement = mergeVideoEngagement
 } = {}) {
   const items = [...queue || []];
   const result = {
@@ -1036,7 +1004,6 @@ async function runDeletionJob({
   };
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
-    let prepared = null;
     if (options.copyMetadata) {
       onProgress(progress("metadata", index, items.length, item, result));
       try {
@@ -1050,20 +1017,19 @@ async function runDeletionJob({
         continue;
       }
     }
-    if (options.preserveEngagement || options.fileMode && options.fileMode !== "records") {
-      try {
-        if (options.preserveEngagement) await mergeEngagement(item.targetId, [item.sourceId]);
-        if (options.fileMode && options.fileMode !== "records")
-          prepared = await prepareFiles("video", item.sourceId, options.fileMode);
-      } catch (reason) {
-        result.failed.push({ sourceId: item.sourceId, stage: "preparation", message: reason.message || "Could not prepare safe cleanup." });
-        continue;
-      }
+    try {
+      await mergeEngagement(item.targetId, [item.sourceId]);
+    } catch (reason) {
+      if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
+      result.failed.push({ sourceId: item.sourceId, stage: "engagement", message: reason.message || "Could not preserve engagement metadata." });
+      continue;
     }
     onProgress(progress("deleting", index, items.length, item, result));
     try {
-      await removeVideo(item.sourceId, { ...options, deleteFiles: false });
-      if (prepared?.token) await finalizeFiles(prepared.token);
+      await removeVideo(item.sourceId, {
+        deleteFiles: options.deleteFiles === true,
+        deleteGenerated: options.deleteGenerated === true
+      });
       result.completedIds.push(item.sourceId);
       onProgress(progress("deleted", index, items.length, item, result));
     } catch (reason) {
@@ -1721,11 +1687,11 @@ function PhashSummary({ left, right, threshold }) {
   return /* @__PURE__ */ React.createElement("div", { className: "dm-phash-summary" }, rows.map(([label, result]) => /* @__PURE__ */ React.createElement("div", { key: label, className: result.matches ? "dm-match" : "dm-mismatch" }, result.matches ? /* @__PURE__ */ React.createElement(Check, { size: 13 }) : /* @__PURE__ */ React.createElement(X, { size: 13 }), /* @__PURE__ */ React.createElement("span", null, label, ": ", result.value))));
 }
 function DeleteDialog({ summary, defaults, onCancel, onConfirm }) {
-  const [fileMode, setFileMode] = useState("trash");
+  const [deleteFiles, setDeleteFiles] = useState(false);
   const [deleteGenerated, setDeleteGenerated] = useState(true);
   const [copyMetadata, setCopyMetadata] = useState(defaults.copyMissingMetadata);
   const [overwriteMetadata, setOverwriteMetadata] = useState(defaults.overwriteConflictingMetadata);
-  return /* @__PURE__ */ React.createElement(Modal, { title: "Delete selected duplicates", onClose: onCancel }, /* @__PURE__ */ React.createElement("p", { className: "dm-dialog-message" }, "Delete ", summary.videos, " video records affecting ", summary.files, " files (", formatBytes(summary.bytes), ")? At least one video will remain in each affected group."), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Source files"), /* @__PURE__ */ React.createElement("select", { value: fileMode, onChange: (event) => setFileMode(event.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "trash" }, "Move to recoverable .dedup-trash"), /* @__PURE__ */ React.createElement("option", { value: "records" }, "Keep on disk (records only)"), defaults.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("option", { value: "permanent" }, "Delete permanently (exact matches only)"))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: deleteGenerated, onChange: (event) => setDeleteGenerated(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Delete generated files"), /* @__PURE__ */ React.createElement("small", null, "Remove Cove thumbnails, previews, sprites, and other generated artifacts."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: copyMetadata, onChange: (event) => setCopyMetadata(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Copy missing metadata from deleted files"), /* @__PURE__ */ React.createElement("small", null, "Merge titles, editable metadata, relationships, and markers before deletion."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: overwriteMetadata, disabled: !copyMetadata, onChange: (event) => setOverwriteMetadata(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Overwrite conflicting metadata"), /* @__PURE__ */ React.createElement("small", null, "Prefer metadata from deleted files when both videos have a value."))), /* @__PURE__ */ React.createElement("div", { className: "dm-dialog-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", onClick: onCancel }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "dm-danger", onClick: () => onConfirm({ fileMode, deleteFiles: false, deleteGenerated, copyMetadata, preserveEngagement: true, overwriteConflictingMetadata: copyMetadata && overwriteMetadata }) }, /* @__PURE__ */ React.createElement(Trash2, { size: 16 }), "Delete ", summary.videos, " videos")));
+  return /* @__PURE__ */ React.createElement(Modal, { title: "Delete selected duplicates", onClose: onCancel }, /* @__PURE__ */ React.createElement("p", { className: "dm-dialog-message" }, "Delete ", summary.videos, " video records affecting ", summary.files, " files (", formatBytes(summary.bytes), ")? At least one video will remain in each affected group."), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: deleteFiles, onChange: (event) => setDeleteFiles(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Delete source file from disk (this will permanently remove the file)"), /* @__PURE__ */ React.createElement("small", null, "This cannot be undone."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: deleteGenerated, onChange: (event) => setDeleteGenerated(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Delete generated files"), /* @__PURE__ */ React.createElement("small", null, "Remove Cove thumbnails, previews, sprites, and other generated artifacts."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: copyMetadata, onChange: (event) => setCopyMetadata(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Copy missing metadata from deleted files"), /* @__PURE__ */ React.createElement("small", null, "Merge titles, editable metadata, relationships, and markers before deletion."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: overwriteMetadata, disabled: !copyMetadata, onChange: (event) => setOverwriteMetadata(event.target.checked) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Overwrite conflicting metadata"), /* @__PURE__ */ React.createElement("small", null, "Prefer metadata from deleted files when both videos have a value."))), /* @__PURE__ */ React.createElement("div", { className: "dm-dialog-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", onClick: onCancel }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "dm-danger", onClick: () => onConfirm({ deleteFiles, deleteGenerated, copyMetadata, overwriteConflictingMetadata: copyMetadata && overwriteMetadata }) }, /* @__PURE__ */ React.createElement(Trash2, { size: 16 }), "Delete ", summary.videos, " videos")));
 }
 function FolderScopeControl({ settings, onChange, onPick, settingsView = false }) {
   const setMode = (folderMode) => onChange(folderMode === "all" ? { folderMode, includedPaths: [] } : { folderMode });
@@ -1845,9 +1811,9 @@ function DuplicateImagesPage() {
     const keeperId = keepers[group.hash] || group.keeperFileId;
     const keeper = group.files.find((file) => file.id === keeperId) || group.files[0];
     const drop = group.files.filter((file) => file.id !== keeper.id && !file.inArchive);
-    if (!drop.length || !window.confirm(`Move ${drop.length} visually matching image file(s) to .dedup-trash?
+    if (!drop.length || !window.confirm(`Permanently delete ${drop.length} visually matching image file(s)?
 
-This group matched pHash distance 0 and still requires your review.`)) return;
+This cannot be undone. The group matched pHash distance 0 and still requires your review.`)) return;
     setBusy(true);
     setError("");
     try {
@@ -1856,8 +1822,7 @@ This group matched pHash distance 0 and still requires your review.`)) return;
         await mergeImages(keeper.imageId, sources);
         await deleteImages(sources);
       }
-      const prepared = await pruneImageFiles(keeper.imageId, drop.map((file) => file.id), "trash");
-      await finalizeImageFileAction(prepared.token);
+      await pruneImageFiles(keeper.imageId, drop.map((file) => file.id));
       await load(page);
     } catch (reason) {
       setError(reason.message);
@@ -1865,7 +1830,7 @@ This group matched pHash distance 0 and still requires your review.`)) return;
     }
   }
   const pages = Math.max(1, Math.ceil((result?.total || 0) / 25));
-  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Images")), /* @__PURE__ */ React.createElement("p", null, "Review-only exact pHash groups. Cleanup always uses recoverable trash; archive entries are protected.")), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: busy, onClick: () => load(page) }, busy ? "Working\u2026" : "Refresh")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), error), /* @__PURE__ */ React.createElement("div", { className: "dm-summary" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, result?.total || 0), " groups"), /* @__PURE__ */ React.createElement("span", null, "Page ", page, " of ", pages)), /* @__PURE__ */ React.createElement("div", { className: "dm-groups" }, (result?.groups || []).map((group) => /* @__PURE__ */ React.createElement("section", { className: "dm-group", key: group.hash }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("strong", null, group.files.length, " copies"), /* @__PURE__ */ React.createElement("span", null, formatBytes(group.freeableBytes), " recoverable")), /* @__PURE__ */ React.createElement("button", { className: "dm-danger", disabled: busy, onClick: () => clean(group) }, "Clean reviewed group")), /* @__PURE__ */ React.createElement("div", { className: "dm-video-grid" }, group.files.map((file) => /* @__PURE__ */ React.createElement("article", { className: `dm-video-card ${(keepers[group.hash] || group.keeperFileId) === file.id ? "dm-selected" : ""}`, key: file.id }, /* @__PURE__ */ React.createElement("div", { className: "dm-media" }, /* @__PURE__ */ React.createElement("button", { className: "dm-check", disabled: file.inArchive, onClick: () => setKeepers((value) => ({ ...value, [group.hash]: file.id })) }, /* @__PURE__ */ React.createElement(Check, { size: 14 })), /* @__PURE__ */ React.createElement("img", { src: `/api/stream/image/${file.imageId}/thumbnail?max=400`, alt: "", loading: "lazy" })), /* @__PURE__ */ React.createElement("div", { className: "dm-video-info" }, /* @__PURE__ */ React.createElement("strong", null, file.width, "\xD7", file.height), /* @__PURE__ */ React.createElement("div", { className: "dm-facts" }, /* @__PURE__ */ React.createElement("span", null, formatBytes(file.size)), file.inArchive && /* @__PURE__ */ React.createElement("span", null, "archive\u2014protected")), /* @__PURE__ */ React.createElement("p", { className: "dm-file-path", title: file.path }, displayPath(file.path))))))))), /* @__PURE__ */ React.createElement("nav", { className: "dm-pagination" }, /* @__PURE__ */ React.createElement("button", { disabled: page <= 1 || busy, onClick: () => load(page - 1) }, /* @__PURE__ */ React.createElement(ArrowLeft, { size: 17 })), /* @__PURE__ */ React.createElement("span", null, "Page ", page, " of ", pages), /* @__PURE__ */ React.createElement("button", { disabled: page >= pages || busy, onClick: () => load(page + 1) }, /* @__PURE__ */ React.createElement(ArrowRight, { size: 17 }))));
+  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Images")), /* @__PURE__ */ React.createElement("p", null, "Review-only exact pHash groups. Cleanup is permanent after confirmation; archive entries are protected.")), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: busy, onClick: () => load(page) }, busy ? "Working\u2026" : "Refresh")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), error), /* @__PURE__ */ React.createElement("div", { className: "dm-summary" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, result?.total || 0), " groups"), /* @__PURE__ */ React.createElement("span", null, "Page ", page, " of ", pages)), /* @__PURE__ */ React.createElement("div", { className: "dm-groups" }, (result?.groups || []).map((group) => /* @__PURE__ */ React.createElement("section", { className: "dm-group", key: group.hash }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("strong", null, group.files.length, " copies"), /* @__PURE__ */ React.createElement("span", null, formatBytes(group.freeableBytes), " recoverable")), /* @__PURE__ */ React.createElement("button", { className: "dm-danger", disabled: busy, onClick: () => clean(group) }, "Clean reviewed group")), /* @__PURE__ */ React.createElement("div", { className: "dm-video-grid" }, group.files.map((file) => /* @__PURE__ */ React.createElement("article", { className: `dm-video-card ${(keepers[group.hash] || group.keeperFileId) === file.id ? "dm-selected" : ""}`, key: file.id }, /* @__PURE__ */ React.createElement("div", { className: "dm-media" }, /* @__PURE__ */ React.createElement("button", { className: "dm-check", disabled: file.inArchive, onClick: () => setKeepers((value) => ({ ...value, [group.hash]: file.id })) }, /* @__PURE__ */ React.createElement(Check, { size: 14 })), /* @__PURE__ */ React.createElement("img", { src: `/api/stream/image/${file.imageId}/thumbnail?max=400`, alt: "", loading: "lazy" })), /* @__PURE__ */ React.createElement("div", { className: "dm-video-info" }, /* @__PURE__ */ React.createElement("strong", null, file.width, "\xD7", file.height), /* @__PURE__ */ React.createElement("div", { className: "dm-facts" }, /* @__PURE__ */ React.createElement("span", null, formatBytes(file.size)), file.inArchive && /* @__PURE__ */ React.createElement("span", null, "archive\u2014protected")), /* @__PURE__ */ React.createElement("p", { className: "dm-file-path", title: file.path }, displayPath(file.path))))))))), /* @__PURE__ */ React.createElement("nav", { className: "dm-pagination" }, /* @__PURE__ */ React.createElement("button", { disabled: page <= 1 || busy, onClick: () => load(page - 1) }, /* @__PURE__ */ React.createElement(ArrowLeft, { size: 17 })), /* @__PURE__ */ React.createElement("span", null, "Page ", page, " of ", pages), /* @__PURE__ */ React.createElement("button", { disabled: page >= pages || busy, onClick: () => load(page + 1) }, /* @__PURE__ */ React.createElement(ArrowRight, { size: 17 }))));
 }
 function DuplicateManagerSettingsPanel() {
   const [settings, setSettings] = useState(normalizeSettings(DEFAULT_SETTINGS));
@@ -1903,51 +1868,10 @@ function DuplicateManagerSettingsPanel() {
   }
   if (loading) return /* @__PURE__ */ React.createElement("div", { className: "dm-settings-loading" }, /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin" }), "Loading Duplicate Manager settings");
   const availableRules = Object.keys(RULE_LABELS).filter((rule) => !settings.keeperRules.includes(rule));
-  return /* @__PURE__ */ React.createElement("div", { className: "dm-settings" }, /* @__PURE__ */ React.createElement("div", { className: "dm-settings-heading" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", null, /* @__PURE__ */ React.createElement(Settings2, { size: 19 }), "Duplicate Manager"), /* @__PURE__ */ React.createElement("p", null, "Defaults used when the improved Duplicate Finder opens.")), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: saving, onClick: save }, saving ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 16 }) : /* @__PURE__ */ React.createElement(Save, { size: 16 }), "Save")), /* @__PURE__ */ React.createElement("div", { className: "dm-settings-grid" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Default match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => update({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"), /* @__PURE__ */ React.createElement("option", { value: "remoteid" }, "Same remote ID"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Exact algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => update({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => update({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Duration delta"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: settings.maxDurationDelta, onChange: (event) => update({ maxDurationDelta: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement(DurationInput, { label: "Minimum length", value: settings.minimumDuration, onChange: (minimumDuration) => update({ minimumDuration }) }), /* @__PURE__ */ React.createElement(PageSizeControl, { settingsLabel: true, value: settings.pageSize, onChange: (pageSize) => update({ pageSize }) })), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Ranking mode"), /* @__PURE__ */ React.createElement("p", null, "Balanced explains codec-aware quality decisions; custom uses your ordered rules."), /* @__PURE__ */ React.createElement("select", { value: settings.rankingMode, onChange: (event) => update({ rankingMode: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "balanced" }, "Balanced quality (recommended)"), /* @__PURE__ */ React.createElement("option", { value: "custom" }, "Custom rule order"))), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Preferred codecs"), /* @__PURE__ */ React.createElement("p", null, "Used by custom ranking, best to worst."), /* @__PURE__ */ React.createElement("input", { value: settings.preferredCodecs.join(", "), onChange: (event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) }) })), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Default folder scope"), /* @__PURE__ */ React.createElement("p", null, "Search all folders, only selected folders, or everything except selected folders."), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: update, onPick: () => setFolderOpen(true), settingsView: true })), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Metadata transfer"), /* @__PURE__ */ React.createElement("p", null, "Defaults used when confirming bulk deletion."), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: settings.copyMissingMetadata, onChange: (event) => update({ copyMissingMetadata: event.target.checked }) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Copy missing metadata from deleted files"), /* @__PURE__ */ React.createElement("small", null, "Merge missing editable metadata, relationships, ratings, markers, and cover artwork into the keeper."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: settings.overwriteConflictingMetadata, disabled: !settings.copyMissingMetadata, onChange: (event) => update({ overwriteConflictingMetadata: event.target.checked }) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Overwrite conflicting metadata"), /* @__PURE__ */ React.createElement("small", null, "Prefer metadata from deleted files when both videos have a value.")))), settings.rankingMode === "custom" && /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Keeper priority"), /* @__PURE__ */ React.createElement("p", null, "Rules are evaluated top to bottom."), /* @__PURE__ */ React.createElement("div", { className: "dm-rule-list" }, settings.keeperRules.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: rule }, /* @__PURE__ */ React.createElement("span", null, index + 1, ". ", RULE_LABELS[rule]), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: index === 0, onClick: () => moveRule(index, -1) }, /* @__PURE__ */ React.createElement(ArrowUp, { size: 15 })), /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: index === settings.keeperRules.length - 1, onClick: () => moveRule(index, 1) }, /* @__PURE__ */ React.createElement(ArrowDown, { size: 15 })), /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", onClick: () => removeRule(index) }, /* @__PURE__ */ React.createElement(X, { size: 15 })))))), availableRules.length > 0 && /* @__PURE__ */ React.createElement("select", { value: "", onChange: (event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Add tie-break rule..."), availableRules.map((rule) => /* @__PURE__ */ React.createElement("option", { key: rule, value: rule }, RULE_LABELS[rule])))), /* @__PURE__ */ React.createElement(TrashManager, null), message && /* @__PURE__ */ React.createElement("div", { className: `dm-alert ${message === "Settings saved." ? "dm-success" : "dm-error"}` }, message), folderOpen && /* @__PURE__ */ React.createElement(FolderDialog, { mode: settings.folderMode, selected: settings.includedPaths, onCancel: () => setFolderOpen(false), onApply: (includedPaths) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "dm-settings" }, /* @__PURE__ */ React.createElement("div", { className: "dm-settings-heading" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", null, /* @__PURE__ */ React.createElement(Settings2, { size: 19 }), "Duplicate Manager"), /* @__PURE__ */ React.createElement("p", null, "Defaults used when the improved Duplicate Finder opens.")), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: saving, onClick: save }, saving ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 16 }) : /* @__PURE__ */ React.createElement(Save, { size: 16 }), "Save")), /* @__PURE__ */ React.createElement("div", { className: "dm-settings-grid" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Default match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => update({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"), /* @__PURE__ */ React.createElement("option", { value: "remoteid" }, "Same remote ID"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Exact algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => update({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => update({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Duration delta"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: settings.maxDurationDelta, onChange: (event) => update({ maxDurationDelta: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement(DurationInput, { label: "Minimum length", value: settings.minimumDuration, onChange: (minimumDuration) => update({ minimumDuration }) }), /* @__PURE__ */ React.createElement(PageSizeControl, { settingsLabel: true, value: settings.pageSize, onChange: (pageSize) => update({ pageSize }) })), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Ranking mode"), /* @__PURE__ */ React.createElement("p", null, "Balanced explains codec-aware quality decisions; custom uses your ordered rules."), /* @__PURE__ */ React.createElement("select", { value: settings.rankingMode, onChange: (event) => update({ rankingMode: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "balanced" }, "Balanced quality (recommended)"), /* @__PURE__ */ React.createElement("option", { value: "custom" }, "Custom rule order"))), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Preferred codecs"), /* @__PURE__ */ React.createElement("p", null, "Used by custom ranking, best to worst."), /* @__PURE__ */ React.createElement("input", { value: settings.preferredCodecs.join(", "), onChange: (event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) }) })), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Default folder scope"), /* @__PURE__ */ React.createElement("p", null, "Search all folders, only selected folders, or everything except selected folders."), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: update, onPick: () => setFolderOpen(true), settingsView: true })), /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Metadata transfer"), /* @__PURE__ */ React.createElement("p", null, "Defaults used when confirming bulk deletion."), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: settings.copyMissingMetadata, onChange: (event) => update({ copyMissingMetadata: event.target.checked }) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Copy missing metadata from deleted files"), /* @__PURE__ */ React.createElement("small", null, "Merge missing editable metadata, relationships, ratings, markers, and cover artwork into the keeper."))), /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: settings.overwriteConflictingMetadata, disabled: !settings.copyMissingMetadata, onChange: (event) => update({ overwriteConflictingMetadata: event.target.checked }) }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, "Overwrite conflicting metadata"), /* @__PURE__ */ React.createElement("small", null, "Prefer metadata from deleted files when both videos have a value.")))), settings.rankingMode === "custom" && /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Keeper priority"), /* @__PURE__ */ React.createElement("p", null, "Rules are evaluated top to bottom."), /* @__PURE__ */ React.createElement("div", { className: "dm-rule-list" }, settings.keeperRules.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: rule }, /* @__PURE__ */ React.createElement("span", null, index + 1, ". ", RULE_LABELS[rule]), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: index === 0, onClick: () => moveRule(index, -1) }, /* @__PURE__ */ React.createElement(ArrowUp, { size: 15 })), /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: index === settings.keeperRules.length - 1, onClick: () => moveRule(index, 1) }, /* @__PURE__ */ React.createElement(ArrowDown, { size: 15 })), /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", onClick: () => removeRule(index) }, /* @__PURE__ */ React.createElement(X, { size: 15 })))))), availableRules.length > 0 && /* @__PURE__ */ React.createElement("select", { value: "", onChange: (event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Add tie-break rule..."), availableRules.map((rule) => /* @__PURE__ */ React.createElement("option", { key: rule, value: rule }, RULE_LABELS[rule])))), message && /* @__PURE__ */ React.createElement("div", { className: `dm-alert ${message === "Settings saved." ? "dm-success" : "dm-error"}` }, message), folderOpen && /* @__PURE__ */ React.createElement(FolderDialog, { mode: settings.folderMode, selected: settings.includedPaths, onCancel: () => setFolderOpen(false), onApply: (includedPaths) => {
     update({ includedPaths });
     setFolderOpen(false);
   } }));
-}
-function TrashManager() {
-  const [trash, setTrash] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  async function refresh() {
-    setBusy(true);
-    setMessage("");
-    try {
-      setTrash(await listDuplicateTrash());
-    } catch (reason) {
-      setMessage(reason.message || "Could not load recovery trash.");
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function restore(path) {
-    setBusy(true);
-    setMessage("");
-    try {
-      await restoreDuplicateTrash(path);
-      await refresh();
-    } catch (reason) {
-      setMessage(reason.message || "Could not restore that file.");
-      setBusy(false);
-    }
-  }
-  async function empty() {
-    if (!window.confirm("Permanently delete every file currently managed by Duplicate Manager recovery trash?")) return;
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = await emptyDuplicateTrash();
-      await refresh();
-      setMessage(`Permanently deleted ${result.deleted || 0} file(s), freeing ${formatBytes(result.freed || 0)}.`);
-    } catch (reason) {
-      setMessage(reason.message || "Could not empty recovery trash.");
-      setBusy(false);
-    }
-  }
-  return /* @__PURE__ */ React.createElement("section", null, /* @__PURE__ */ React.createElement("h4", null, "Recovery trash"), /* @__PURE__ */ React.createElement("p", null, "Files moved by Duplicate Manager remain beside their original folders until you restore or permanently empty them."), /* @__PURE__ */ React.createElement("div", { className: "dm-dialog-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: busy, onClick: refresh }, busy ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 15 }) : null, "Refresh"), (trash?.count || 0) > 0 && /* @__PURE__ */ React.createElement("button", { className: "dm-danger", disabled: busy, onClick: empty }, "Empty permanently")), trash && /* @__PURE__ */ React.createElement("p", null, /* @__PURE__ */ React.createElement("strong", null, trash.count || 0), " files (", formatBytes(trash.bytes || 0), ")"), (trash?.entries || []).map((entry) => /* @__PURE__ */ React.createElement("div", { className: "dm-rule-list", key: entry.path }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { title: entry.originalPath }, displayPath(entry.originalPath), " \xB7 ", formatBytes(entry.size)), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: busy, onClick: () => restore(entry.path) }, "Restore")))), message && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, message));
 }
 var index_default = { components: { DuplicateManagerPage, DuplicateImagesPage, DuplicateManagerSettingsPanel } };
 function deletionProgressText(progress2) {

@@ -1,10 +1,10 @@
 {
   "name": "cove-duplicate-manager-ui",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.0.1",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
+    "build": "npm test && node build.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {

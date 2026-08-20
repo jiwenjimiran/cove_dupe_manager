@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 - 2026-08-20
+
+- Restore the 1.9.7 metadata-first video deletion flow and pass permanent source-file deletion directly to Cove.
+- Remove `.dedup-trash` creation and recovery management from video and image cleanup.
+- Make reviewed image cleanup explicitly permanent while continuing to protect archive entries.
+- Run the complete regression suite as a mandatory part of frontend and package builds.
+
 ## 2.0.0 - 2026-08-15
 
 - Add balanced, codec-aware keeper ranking with an explanation for each recommendation while retaining A's custom rule mode.

@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "2.0.0",
+    [string]$Version = "2.0.1",
     [switch]$NoRestore
 )
 
@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $frontend = Join-Path $root "frontend"
 $project = Join-Path $root "src\DuplicateManager\DuplicateManager.csproj"
+$regressionProject = Join-Path $root "tests\DuplicateManager.RegressionTests\DuplicateManager.RegressionTests.csproj"
 $publishDir = Join-Path $root "artifacts\extension"
 $zipPath = Join-Path $root "artifacts\io.github.jiwenjimiran.duplicate-manager-$Version.zip"
 
@@ -27,12 +28,13 @@ Push-Location $frontend
 try {
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed with exit code $LASTEXITCODE." }
-    npm test
-    if ($LASTEXITCODE -ne 0) { throw "Frontend tests failed with exit code $LASTEXITCODE." }
 }
 finally {
     Pop-Location
 }
+
+dotnet run --project $regressionProject -c $Configuration
+if ($LASTEXITCODE -ne 0) { throw "Backend regression tests failed with exit code $LASTEXITCODE." }
 
 if (Test-Path -LiteralPath $publishDir) {
     Remove-Item -LiteralPath $publishDir -Recurse -Force

@@ -25,10 +25,10 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Select-to-delete workflow with automatic "keep recommended" rules
 - Balanced codec-aware keeper recommendations with clear reasons, risk scoring, and an optional custom-rule mode
 - Muted hover previews and synchronized Direct/FFmpeg A/B video comparison with a wipe slider
-- Recoverable source-file cleanup through a per-folder `.dedup-trash`, plus records-only and exact-match permanent modes
+- Explicit records-only or permanent source-file cleanup using Cove's normal deletion API
 - Incremental per-video deletion with automatic in-place authentication refresh and exact partial-failure reporting
 - Per-user affinity, rating, bookmark, and interaction migration before duplicate records are removed
-- A separate review-only image deduper using stored exact pHashes, metadata merging, and archive protection
+- A separate review-only image deduper using stored exact pHashes, metadata merging, explicit permanent cleanup, and archive protection
 - A safety check that requires at least one keeper in every affected group
 - Saved metadata-transfer defaults, including checked-by-default missing-value copying and optional conflict overwriting
 - Defaults under `Settings -> Extensions -> Installed -> Duplicate Manager`
@@ -54,7 +54,7 @@ Create an installable ZIP:
 .\scripts\package.ps1
 ```
 
-The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.0.0.zip`.
+The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.0.1.zip`.
 
 ## Upgrade from 1.6.0 or older
 
@@ -73,7 +73,7 @@ installation. This does not affect Cove video metadata or source files.
 
 1. Open Cove and go to `Settings -> Extensions -> Installed`.
 2. Choose **Install from URL**.
-3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.0.0.zip` from the GitHub release.
+3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.0.1.zip` from the GitHub release.
 4. Enable the extension if Cove does not enable it automatically, then reload Cove.
 5. Open Cove's existing **Duplicate Finder**. The extension replaces that page.
 
@@ -87,6 +87,8 @@ installation. This does not affect Cove video metadata or source files.
 ## Safety
 
 Checkboxes always mean **mark for deletion**. Automatic selection leaves one recommended keeper in each group, and the extension blocks any operation that would remove a whole group. The confirmation defaults to copying metadata to the keeper and deleting generated files while leaving source files on disk.
+
+Version 2.0.1 no longer creates or manages `.dedup-trash`. Existing folders created by 2.0.0 are left untouched so they can be reviewed manually.
 
 ## License
 
