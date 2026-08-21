@@ -28,11 +28,27 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(UseLocalCovePlugins)' == 'true' and '$(CoveHostAssemblyDir)' == ''">
-    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj" Condition="Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">
+    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' != ''">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
-    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj" Condition="Exists('$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj')">
+    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Sdk\Cove.Sdk.csproj" Condition="'$(CoveSourceRoot)' != ''">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Core\Cove.Core.csproj" Condition="'$(CoveSourceRoot)' != ''">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Data\Cove.Data.csproj" Condition="'$(CoveSourceRoot)' != ''">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj')">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>

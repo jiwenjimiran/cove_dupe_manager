@@ -3,6 +3,7 @@
 ## 2.0.2 - 2026-08-20
 
 - Keep deletion progress text stable across metadata and deletion stages, updating only the current video number.
+- Build releases against pinned Cove 1.1.0 contracts so the complete backend is compiled in CI.
 
 ## 2.0.1 - 2026-08-20
 

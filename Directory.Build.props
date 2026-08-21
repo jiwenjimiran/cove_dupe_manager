@@ -6,6 +6,7 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <CovePluginsVersion Condition="'$(CovePluginsVersion)' == ''">1.0.0</CovePluginsVersion>
     <CoveHostAssemblyDir Condition="'$(CoveHostAssemblyDir)' == ''"></CoveHostAssemblyDir>
+    <CoveSourceRoot Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">$(MSBuildThisFileDirectory)..\cove</CoveSourceRoot>
     <UseLocalCovePlugins Condition="'$(UseLocalCovePlugins)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">true</UseLocalCovePlugins>
     <UseLocalCovePlugins Condition="'$(UseLocalCovePlugins)' == ''">false</UseLocalCovePlugins>
   </PropertyGroup>

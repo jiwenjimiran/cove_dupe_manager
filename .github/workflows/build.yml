@@ -21,6 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Check out Cove 1.1.0 build contracts
+        uses: actions/checkout@v6
+        with:
+          repository: yourcove/cove
+          ref: v1.1.0
+          path: cove
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
@@ -37,9 +43,9 @@ jobs:
       - name: Test backend file cleanup
         run: dotnet run --project tests/DuplicateManager.RegressionTests/DuplicateManager.RegressionTests.csproj -c Release
       - name: Build extension
-        run: dotnet build ${{ env.EXTENSION_PROJECT }} -c Release -p:UseLocalCovePlugins=false
+        run: dotnet build ${{ env.EXTENSION_PROJECT }} -c Release -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Publish extension
-        run: dotnet publish ${{ env.EXTENSION_PROJECT }} -c Release -o artifacts/extension --no-build -p:UseLocalCovePlugins=false
+        run: dotnet publish ${{ env.EXTENSION_PROJECT }} -c Release -o artifacts/extension --no-build -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Resolve version
         id: version
         shell: bash
