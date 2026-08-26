@@ -21,7 +21,17 @@ public sealed partial class DuplicateManagerExtension
         var group = endpoints.MapGroup("/api/ext/duplicate-manager");
         group.MapPost("/videos/engagement-merge", MergeVideoEngagementAsync)
             .RequireCovePermission("videos.write");
+        group.MapPost("/videos/deletion-jobs", StartVideoDeletionJobAsync)
+            .RequireCovePermission("videos.write")
+            .RequireCovePermission("videos.delete");
+        group.MapGet("/videos/deletion-jobs/{operationId}", GetVideoDeletionJob)
+            .RequireCovePermission("videos.read");
         group.MapGet("/images/duplicates", FindDuplicateImagesAsync)
+            .RequireCovePermission("images.read");
+        group.MapPost("/images/deletion-jobs", StartImageDeletionJobAsync)
+            .RequireCovePermission("images.write")
+            .RequireCovePermission("images.delete");
+        group.MapGet("/images/deletion-jobs/{operationId}", GetImageDeletionJob)
             .RequireCovePermission("images.read");
         group.MapPost("/images/merge", MergeImagesAsync)
             .RequireCovePermission("images.write");
@@ -29,9 +39,53 @@ public sealed partial class DuplicateManagerExtension
             .RequireCovePermission("images.delete");
     }
 
-    private static bool IsArchivePath(string? path) => !string.IsNullOrWhiteSpace(path)
+    internal static bool IsArchivePath(string? path) => !string.IsNullOrWhiteSpace(path)
         && (path.Replace('\\', '/').Contains(".zip/", StringComparison.OrdinalIgnoreCase)
             || path.Replace('\\', '/').Contains(".cbz/", StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<IResult> StartVideoDeletionJobAsync(HttpContext http, CancellationToken ct)
+    {
+        var request = await http.Request.ReadFromJsonAsync<VideoDeletionJobRequest>(cancellationToken: ct);
+        if (request is null)
+            return Results.BadRequest(new { message = "A deletion job request is required." });
+        try
+        {
+            var snapshot = http.RequestServices.GetRequiredService<DuplicateDeletionJobService>().StartVideoJob(request);
+            return Results.Accepted($"/api/ext/duplicate-manager/videos/deletion-jobs/{snapshot.OperationId}", snapshot);
+        }
+        catch (ArgumentException ex)
+        {
+            return Results.BadRequest(new { message = ex.Message });
+        }
+    }
+
+    private static IResult GetVideoDeletionJob(string operationId, HttpContext http)
+    {
+        var snapshot = http.RequestServices.GetRequiredService<DuplicateDeletionJobService>().Get(operationId, "video");
+        return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+    }
+
+    private static async Task<IResult> StartImageDeletionJobAsync(HttpContext http, CancellationToken ct)
+    {
+        var request = await http.Request.ReadFromJsonAsync<ImageDeletionJobRequest>(cancellationToken: ct);
+        if (request is null)
+            return Results.BadRequest(new { message = "A deletion job request is required." });
+        try
+        {
+            var snapshot = http.RequestServices.GetRequiredService<DuplicateDeletionJobService>().StartImageJob(request);
+            return Results.Accepted($"/api/ext/duplicate-manager/images/deletion-jobs/{snapshot.OperationId}", snapshot);
+        }
+        catch (ArgumentException ex)
+        {
+            return Results.BadRequest(new { message = ex.Message });
+        }
+    }
+
+    private static IResult GetImageDeletionJob(string operationId, HttpContext http)
+    {
+        var snapshot = http.RequestServices.GetRequiredService<DuplicateDeletionJobService>().Get(operationId, "image");
+        return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+    }
 
     private static async Task<IResult> MergeVideoEngagementAsync(EngagementMergeRequest request, HttpContext http, CancellationToken ct)
     {

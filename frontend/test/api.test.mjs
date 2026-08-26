@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, deleteVideo, findDuplicates,
-  loadTranscodeResolutions, mediaUrls, request,
+  loadTranscodeResolutions, mediaUrls, request, startImageDeletionJob, startVideoDeletionJob,
 } from "../src/api.js";
 
 function storage(initial = {}) {
@@ -271,6 +271,50 @@ test("permanent deletion passes the source-file choice directly to Cove", async 
     globalThis.fetch = originalFetch;
   }
   assert.deepEqual(requestBody, { ids: [42], deleteFiles: true, deleteGenerated: true });
+});
+
+test("video cleanup queues one server-side deletion job", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (path, options = {}) => {
+    assert.equal(path, "/api/ext/duplicate-manager/videos/deletion-jobs");
+    assert.equal(options.method, "POST");
+    requestBody = JSON.parse(options.body);
+    return { ok: true, status: 202, text: async () => JSON.stringify({ operationId: "operation-1" }), statusText: "Accepted" };
+  };
+  try {
+    await startVideoDeletionJob([{ targetId: 10, sourceId: 11 }], {
+      copyMetadata: true,
+      overwriteConflictingMetadata: false,
+      deleteFiles: true,
+      deleteGenerated: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(requestBody, {
+    items: [{ targetId: 10, sourceId: 11 }],
+    copyMetadata: true,
+    overwriteConflictingMetadata: false,
+    deleteFiles: true,
+    deleteGenerated: true,
+  });
+});
+
+test("reviewed image cleanup queues metadata merge and file pruning together", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (path, options = {}) => {
+    assert.equal(path, "/api/ext/duplicate-manager/images/deletion-jobs");
+    requestBody = JSON.parse(options.body);
+    return { ok: true, status: 202, text: async () => JSON.stringify({ operationId: "image-operation" }), statusText: "Accepted" };
+  };
+  try {
+    await startImageDeletionJob(10, [11, 12], [101, 102]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(requestBody, { targetImageId: 10, sourceImageIds: [11, 12], fileIds: [101, 102] });
 });
 
 test("metadata copy updates the keeper before recreating ratings and markers", async () => {

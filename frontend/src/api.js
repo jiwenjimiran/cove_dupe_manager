@@ -166,6 +166,23 @@ export function mergeVideoEngagement(targetId, sourceIds) {
   });
 }
 
+export function startVideoDeletionJob(items, options) {
+  return request("/api/ext/duplicate-manager/videos/deletion-jobs", {
+    method: "POST",
+    body: JSON.stringify({
+      items,
+      copyMetadata: options?.copyMetadata === true,
+      overwriteConflictingMetadata: options?.overwriteConflictingMetadata === true,
+      deleteFiles: options?.deleteFiles === true,
+      deleteGenerated: options?.deleteGenerated === true,
+    }),
+  });
+}
+
+export function getVideoDeletionJob(operationId) {
+  return request(`/api/ext/duplicate-manager/videos/deletion-jobs/${encodeURIComponent(operationId)}`);
+}
+
 export function findDuplicateImages({ page = 1, pageSize = 25, minBytes = 0 } = {}) {
   return request(`/api/ext/duplicate-manager/images/duplicates?page=${page}&pageSize=${pageSize}&minBytes=${minBytes}`);
 }
@@ -174,6 +191,17 @@ export function mergeImages(targetImageId, sourceImageIds) {
   return request("/api/ext/duplicate-manager/images/merge", {
     method: "POST", body: JSON.stringify({ targetImageId, sourceImageIds }),
   });
+}
+
+export function startImageDeletionJob(targetImageId, sourceImageIds, fileIds) {
+  return request("/api/ext/duplicate-manager/images/deletion-jobs", {
+    method: "POST",
+    body: JSON.stringify({ targetImageId, sourceImageIds, fileIds }),
+  });
+}
+
+export function getImageDeletionJob(operationId) {
+  return request(`/api/ext/duplicate-manager/images/deletion-jobs/${encodeURIComponent(operationId)}`);
 }
 
 export function pruneImageFiles(imageId, fileIds) {

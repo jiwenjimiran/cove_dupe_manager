@@ -333,10 +333,10 @@ function formatDuration(seconds) {
   const s = total % 60;
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 }
-function deletionProgress(progress2) {
-  const total = Math.max(0, Math.trunc(Number(progress2?.total) || 0));
+function deletionProgress(progress) {
+  const total = Math.max(0, Math.trunc(Number(progress?.total) || 0));
   if (total === 0) return null;
-  const current = Math.min(total, Math.max(1, Math.trunc(Number(progress2?.current) || 1)));
+  const current = Math.min(total, Math.max(1, Math.trunc(Number(progress?.current) || 1)));
   return { current, total, digits: String(total).length };
 }
 function displayPath(value, maxLength = 144) {
@@ -402,27 +402,6 @@ function metadataCopyCount(target, source) {
   count += Object.entries(source?.customFields || {}).filter(([key, value]) => !isPopulated(targetFields[key]) && isPopulated(value)).length;
   if (!isPopulated(target?.imagePath) && isPopulated(source?.imagePath)) count++;
   return count;
-}
-function buildMergedVideoUpdate(target, sources, { overwriteConflicts = false } = {}) {
-  const ordered = [...sources || []].sort((a, b) => metadataCount(b) - metadataCount(a));
-  const scalarFields = ["title", "code", "details", "director", "date", "rating", "studioId", "captions", "organized", "isVr"];
-  const update = {};
-  for (const field of scalarFields) {
-    const sourceValues = ordered.map((item) => item?.[field]);
-    update[field] = overwriteConflicts ? firstPopulated(...sourceValues, target?.[field]) : firstPopulated(target?.[field], ...sourceValues);
-  }
-  update.urls = uniquePrimitive([...target?.urls || [], ...ordered.flatMap((item) => item?.urls || [])]);
-  update.tagIds = uniqueIds([...target?.tags || [], ...ordered.flatMap((item) => item?.tags || [])]);
-  update.performerIds = uniqueIds([...target?.performers || [], ...ordered.flatMap((item) => item?.performers || [])]);
-  update.galleryIds = uniqueIds([...target?.galleries || [], ...ordered.flatMap((item) => item?.galleries || [])]);
-  const sourceGroups = ordered.flatMap((item) => item?.groups || []);
-  update.groups = uniqueGroups(overwriteConflicts ? [...sourceGroups, ...target?.groups || []] : [...target?.groups || [], ...sourceGroups]);
-  update.remoteIds = mergeKeyed(target?.remoteIds, ordered.map((item) => item?.remoteIds), overwriteConflicts);
-  update.customFields = mergeKeyed(target?.customFields, ordered.map((item) => item?.customFields), overwriteConflicts);
-  return update;
-}
-function segmentSignature(segment) {
-  return [segment?.startSec, segment?.endSec, segment?.tagId, segment?.kind, segment?.refId, segment?.title].map((value) => String(value ?? "")).join("|");
 }
 function compareVideos(left, right, settings) {
   for (const rule of settings.keeperRules) {
@@ -523,9 +502,6 @@ function formatSeconds(value) {
   const seconds = Number(value || 0);
   return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} ${seconds === 1 ? "second" : "seconds"}`;
 }
-function firstPopulated(...values) {
-  return values.find(isPopulated) ?? null;
-}
 function isPopulated(value) {
   return value !== null && value !== void 0 && (typeof value !== "string" || value.trim() !== "");
 }
@@ -540,29 +516,6 @@ function missingRelationCount(target, source) {
 function missingObjectCount(target, source) {
   const existing = new Set((target || []).map((value) => JSON.stringify(value)));
   return new Set((source || []).map((value) => JSON.stringify(value)).filter((value) => !existing.has(value))).size;
-}
-function uniquePrimitive(values) {
-  return [...new Set(values.filter((value) => value !== null && value !== void 0 && value !== ""))];
-}
-function uniqueIds(values) {
-  return [...new Set(values.map((value) => value?.id ?? value).filter((value) => value !== null && value !== void 0))];
-}
-function uniqueObjects(values) {
-  const keyed = /* @__PURE__ */ new Map();
-  for (const value of values) keyed.set(JSON.stringify(value), value);
-  return [...keyed.values()];
-}
-function uniqueGroups(values) {
-  const groups = /* @__PURE__ */ new Map();
-  for (const value of values) {
-    const groupId = Number(value?.groupId ?? value?.id ?? 0);
-    if (groupId > 0 && !groups.has(groupId)) groups.set(groupId, { groupId, videoIndex: Number(value?.videoIndex || 0) });
-  }
-  return [...groups.values()];
-}
-function mergeKeyed(primary, fallbacks, overwriteConflicts = false) {
-  if (Array.isArray(primary) || (fallbacks || []).some(Array.isArray)) return uniqueObjects([...primary || [], ...(fallbacks || []).flatMap((value) => value || [])]);
-  return overwriteConflicts ? Object.assign({}, primary || {}, ...(fallbacks || []).slice().reverse().filter(Boolean)) : Object.assign({}, ...(fallbacks || []).slice().reverse().filter(Boolean), primary || {});
 }
 function phashes(video) {
   return (video?.files || []).flatMap((file) => file.fingerprints || []).filter((fingerprint) => String(fingerprint.type || "").toLowerCase() === "phash").map((fingerprint) => String(fingerprint.value || "").trim().replace(/^0x/i, "")).filter((value) => /^[0-9a-f]+$/i.test(value));
@@ -646,9 +599,6 @@ var ApiRequestError = class extends Error {
     this.body = body;
   }
 };
-function isAuthenticationRequired(reason) {
-  return reason instanceof AuthenticationRequiredError || reason?.code === "AUTHENTICATION_REQUIRED";
-}
 async function request(path, options = {}) {
   const response = await authenticatedFetch(path, {
     ...options,
@@ -779,32 +729,32 @@ function loadSettings() {
 function saveSettings(settings) {
   return request(SETTINGS_URL, { method: "PUT", body: JSON.stringify(settings) });
 }
-function mergeVideoEngagement(targetId, sourceIds) {
-  return request("/api/ext/duplicate-manager/videos/engagement-merge", {
+function startVideoDeletionJob(items, options) {
+  return request("/api/ext/duplicate-manager/videos/deletion-jobs", {
     method: "POST",
-    body: JSON.stringify({ targetId, sourceIds })
+    body: JSON.stringify({
+      items,
+      copyMetadata: options?.copyMetadata === true,
+      overwriteConflictingMetadata: options?.overwriteConflictingMetadata === true,
+      deleteFiles: options?.deleteFiles === true,
+      deleteGenerated: options?.deleteGenerated === true
+    })
   });
+}
+function getVideoDeletionJob(operationId) {
+  return request(`/api/ext/duplicate-manager/videos/deletion-jobs/${encodeURIComponent(operationId)}`);
 }
 function findDuplicateImages({ page = 1, pageSize = 25, minBytes = 0 } = {}) {
   return request(`/api/ext/duplicate-manager/images/duplicates?page=${page}&pageSize=${pageSize}&minBytes=${minBytes}`);
 }
-function mergeImages(targetImageId, sourceImageIds) {
-  return request("/api/ext/duplicate-manager/images/merge", {
+function startImageDeletionJob(targetImageId, sourceImageIds, fileIds) {
+  return request("/api/ext/duplicate-manager/images/deletion-jobs", {
     method: "POST",
-    body: JSON.stringify({ targetImageId, sourceImageIds })
+    body: JSON.stringify({ targetImageId, sourceImageIds, fileIds })
   });
 }
-function pruneImageFiles(imageId, fileIds) {
-  return request("/api/ext/duplicate-manager/images/prune", {
-    method: "POST",
-    body: JSON.stringify({ imageId, fileIds })
-  });
-}
-function deleteImages(ids) {
-  return request("/api/images/bulk", {
-    method: "DELETE",
-    body: JSON.stringify({ ids, deleteFiles: false, deleteGenerated: true })
-  });
+function getImageDeletionJob(operationId) {
+  return request(`/api/ext/duplicate-manager/images/deletion-jobs/${encodeURIComponent(operationId)}`);
 }
 function findDuplicates(options) {
   const params = new URLSearchParams({
@@ -813,99 +763,6 @@ function findDuplicates(options) {
   });
   if (options.matchType === "phash") params.set("durationDiff", String(options.maxDurationDelta));
   return request(`/api/videos/duplicates?${params}`);
-}
-function deleteVideos(ids, { deleteFiles, deleteGenerated }) {
-  return request("/api/videos/destroy", {
-    method: "POST",
-    body: JSON.stringify({ ids, deleteFiles, deleteGenerated })
-  });
-}
-async function deleteVideo(id, options) {
-  const result = await deleteVideos([id], options);
-  if (Number(result?.deleted || 0) === 1) return true;
-  try {
-    await getVideo(id);
-    throw new Error(`Cove did not delete video ${id}.`);
-  } catch (reason) {
-    if (reason instanceof ApiRequestError && reason.status === 404) return true;
-    throw reason;
-  }
-}
-function getVideo(id) {
-  return request(`/api/videos/${id}`);
-}
-function updateVideo(id, update) {
-  return request(`/api/videos/${id}`, { method: "PUT", body: JSON.stringify(update) });
-}
-function listSegments(videoId) {
-  return request(`/api/videos/${videoId}/segments`);
-}
-function createSegment(videoId, segment) {
-  const fields = ["startSec", "endSec", "tagId", "kind", "refId", "payload", "sourceKey", "sourceRunId", "confidence", "title", "colorHint"];
-  const body = Object.fromEntries(fields.filter((field) => segment?.[field] !== void 0).map((field) => [field, segment[field]]));
-  return request(`/api/videos/${videoId}/segments`, { method: "POST", body: JSON.stringify(body) });
-}
-function getRatings(videoId) {
-  return request(`/api/videos/${videoId}/ratings`);
-}
-function setRating(videoId, aspect, value) {
-  return request(`/api/videos/${videoId}/rating`, { method: "POST", body: JSON.stringify({ aspect, value }) });
-}
-async function copyVideoMetadata(targetId, sourceIds, { overwriteConflicts = false } = {}) {
-  const ids = [targetId, ...sourceIds || []];
-  const videos = await Promise.all(ids.map(getVideo));
-  const segments = await Promise.all(ids.map(listSegments));
-  const ratings = await Promise.all(ids.map(getRatings));
-  const target = videos[0];
-  const sourceRecords = videos.slice(1).map((video, index) => ({
-    video,
-    segments: segments[index + 1],
-    ratings: ratings[index + 1]
-  })).sort((left, right) => metadataCount(right.video) - metadataCount(left.video));
-  const sources = sourceRecords.map((record) => record.video);
-  const coverSources = !target.imagePath || overwriteConflicts ? [...sources].sort((left, right) => Number(Boolean(right.imagePath)) - Number(Boolean(left.imagePath)) || metadataCount(right) - metadataCount(left)) : [];
-  const warnings = [];
-  await updateVideo(targetId, buildMergedVideoUpdate(target, sources, { overwriteConflicts }));
-  let coverCopied = coverSources.length === 0;
-  for (const coverSource of coverSources) {
-    try {
-      if (await copyVideoCoverImage(targetId, coverSource)) {
-        coverCopied = true;
-        break;
-      }
-    } catch {
-    }
-  }
-  if (!coverCopied) warnings.push(`Cover artwork could not be copied to video ${targetId}.`);
-  const targetRatings = ratings[0]?.ratings || {};
-  const sourceRatings = sourceRecords.map((record) => record.ratings?.ratings || {}).reverse();
-  const mergedRatings = overwriteConflicts ? Object.assign({}, targetRatings, ...sourceRatings) : Object.assign({}, ...sourceRatings, targetRatings);
-  for (const [aspect, value] of Object.entries(mergedRatings)) {
-    if (overwriteConflicts || targetRatings[aspect] === void 0) await setRating(targetId, aspect, value);
-  }
-  const existing = new Set((segments[0] || []).map(segmentSignature));
-  for (const segment of sourceRecords.flatMap((record) => record.segments || [])) {
-    const signature = segmentSignature(segment);
-    if (existing.has(signature)) continue;
-    await createSegment(targetId, segment);
-    existing.add(signature);
-  }
-  return { warnings };
-}
-async function copyVideoCoverImage(targetId, source) {
-  const sourceUrl = `/api/videos/${source?.id}/image`;
-  const response = await authenticatedFetch(sourceUrl);
-  if (response.status === 404) return false;
-  if (!response.ok) throw new Error(`Could not read cover image from video ${source?.id}.`);
-  const blob = await response.blob();
-  const form = new FormData();
-  form.append("file", blob, `video-${source?.id}-cover`);
-  const upload = await authenticatedFetch(`/api/videos/${targetId}/image`, { method: "POST", body: form });
-  if (!upload.ok) {
-    const message = await upload.text().catch(() => "");
-    throw new Error(message || `Could not copy cover image to video ${targetId}.`);
-  }
-  return true;
 }
 function loadFolders(path) {
   return request(`/api/metadata/library-folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
@@ -972,6 +829,7 @@ function clearSession() {
 }
 
 // src/deletionJob.js
+var TERMINAL_STATUSES = /* @__PURE__ */ new Set(["complete", "partial", "failed", "cancelled"]);
 function buildDeletionQueue(plans, { overwriteConflicts = false } = {}) {
   const queuedIds = /* @__PURE__ */ new Set();
   const queue = [];
@@ -993,99 +851,75 @@ async function runDeletionJob({
   options,
   onProgress = () => {
   },
-  copyMetadata = copyVideoMetadata,
-  removeVideo = deleteVideo,
-  loadVideo = getVideo,
-  mergeEngagement = mergeVideoEngagement
+  startJob = startVideoDeletionJob,
+  loadJob = getVideoDeletionJob,
+  wait = delay,
+  pollInterval = 750
 } = {}) {
-  const items = [...queue || []];
-  const result = {
-    status: "complete",
-    total: items.length,
-    completedIds: [],
-    failed: [],
-    warnings: [],
-    interrupted: null,
-    notAttemptedIds: []
-  };
-  for (let index = 0; index < items.length; index++) {
-    const item = items[index];
-    if (options.copyMetadata) {
-      onProgress(progress("metadata", index, items.length, item, result));
-      try {
-        const copied = await copyMetadata(item.targetId, [item.sourceId], {
-          overwriteConflicts: options.overwriteConflictingMetadata
-        });
-        for (const warning of copied?.warnings || []) result.warnings.push({ sourceId: item.sourceId, message: warning });
-      } catch (reason) {
-        if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
-        result.failed.push({ sourceId: item.sourceId, stage: "metadata", message: reason.message || "Metadata copy failed." });
-        continue;
-      }
-    }
-    try {
-      await mergeEngagement(item.targetId, [item.sourceId]);
-    } catch (reason) {
-      if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
-      result.failed.push({ sourceId: item.sourceId, stage: "engagement", message: reason.message || "Could not preserve engagement metadata." });
-      continue;
-    }
-    onProgress(progress("deleting", index, items.length, item, result));
-    try {
-      await removeVideo(item.sourceId, {
-        deleteFiles: options.deleteFiles === true,
-        deleteGenerated: options.deleteGenerated === true
-      });
-      result.completedIds.push(item.sourceId);
-      onProgress(progress("deleted", index, items.length, item, result));
-    } catch (reason) {
-      if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
-      const reconciliation = await reconcileDeletion(item.sourceId, loadVideo);
-      if (reconciliation === "deleted") {
-        result.completedIds.push(item.sourceId);
-        onProgress(progress("deleted", index, items.length, item, result));
-      } else if (reconciliation?.authError) {
-        return stopForAuthentication(result, items, index, reconciliation.authError);
-      } else {
-        result.failed.push({ sourceId: item.sourceId, stage: "deletion", message: reason.message || "Deletion failed." });
-      }
-    }
+  const started = await startJob([...queue || []], options || {});
+  return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
+}
+async function runImageDeletionJob({
+  targetImageId,
+  sourceImageIds,
+  fileIds,
+  onProgress = () => {
+  },
+  startJob = startImageDeletionJob,
+  loadJob = getImageDeletionJob,
+  wait = delay,
+  pollInterval = 750
+} = {}) {
+  const started = await startJob(targetImageId, sourceImageIds, fileIds);
+  return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
+}
+async function waitForDeletionJob(started, {
+  loadJob,
+  onProgress = () => {
+  },
+  wait = delay,
+  pollInterval = 750
+} = {}) {
+  if (!started?.operationId) throw new Error("Cove did not return a deletion job id.");
+  let snapshot = started;
+  while (true) {
+    onProgress(deletionJobProgress(snapshot));
+    if (TERMINAL_STATUSES.has(snapshot.status)) return deletionJobResult(snapshot);
+    await wait(pollInterval);
+    snapshot = await loadJob(started.operationId);
   }
-  if (result.failed.length > 0) result.status = "partial";
-  return result;
+}
+function deletionJobProgress(snapshot) {
+  const total = Math.max(0, Math.trunc(Number(snapshot?.total) || 0));
+  const processed = Math.min(total, Math.max(0, Math.trunc(Number(snapshot?.processed) || 0)));
+  return {
+    operationId: snapshot?.operationId,
+    coreJobId: snapshot?.coreJobId,
+    stage: snapshot?.stage || "queued",
+    current: total === 0 ? 0 : Math.min(total, processed + (TERMINAL_STATUSES.has(snapshot?.status) ? 0 : 1)),
+    total,
+    completed: snapshot?.completedIds?.length || 0,
+    failed: snapshot?.failed?.length || 0,
+    warnings: snapshot?.warnings?.length || 0,
+    sourceId: snapshot?.currentSourceId ?? null,
+    targetId: snapshot?.currentTargetId ?? null
+  };
+}
+function deletionJobResult(snapshot) {
+  return {
+    ...snapshot,
+    status: snapshot?.status || "failed",
+    completedIds: [...snapshot?.completedIds || []],
+    failed: [...snapshot?.failed || []],
+    warnings: [...snapshot?.warnings || []]
+  };
 }
 function removeVideoIdsFromGroups(groups, ids) {
   const removed = ids instanceof Set ? ids : new Set(ids || []);
   return (groups || []).map((group) => group.filter((video) => !removed.has(video.id))).filter((group) => group.length > 1);
 }
-function progress(stage, index, total, item, result) {
-  return {
-    stage,
-    current: index + 1,
-    total,
-    sourceId: item.sourceId,
-    targetId: item.targetId,
-    completed: result.completedIds.length,
-    failed: result.failed.length,
-    warnings: result.warnings.length
-  };
-}
-async function reconcileDeletion(sourceId, loadVideo) {
-  try {
-    await loadVideo(sourceId);
-    return "present";
-  } catch (reason) {
-    if (isAuthenticationRequired(reason)) return { authError: reason };
-    if (reason instanceof ApiRequestError && reason.status === 404) return "deleted";
-    return "unknown";
-  }
-}
-function stopForAuthentication(result, items, index, reason) {
-  result.status = "auth_required";
-  result.authError = reason.message || "Cove authentication could not be refreshed.";
-  result.interrupted = { sourceId: items[index].sourceId, message: result.authError };
-  result.notAttemptedIds = items.slice(index + 1).map((item) => item.sourceId);
-  return result;
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 // src/index.jsx
@@ -1260,24 +1094,23 @@ function DuplicateManagerPage({ onNavigate }) {
     operation.promise = runDeletionJob({
       queue,
       options,
-      onProgress: (progress2) => {
-        operation.progress = progress2;
-        setDeleteProgress({ ...progress2 });
-        if (progress2.stage !== "deleted") return;
-        const nextGroups = removeVideoIdsFromGroups(session.rawGroups || rawGroups, [progress2.sourceId]);
-        const nextSelected = new Set(session.selectedIds);
-        nextSelected.delete(progress2.sourceId);
-        session.rawGroups = nextGroups;
-        session.selectedIds = nextSelected;
-        setRawGroups(nextGroups);
-        setSelectedIds(new Set(nextSelected));
+      onProgress: (progress) => {
+        operation.progress = progress;
+        setDeleteProgress({ ...progress });
       }
     }).then((result) => {
       operation.status = result.status;
       operation.result = result;
       operation.notice = deletionResultNotice(result);
+      const nextGroups = removeVideoIdsFromGroups(session.rawGroups || rawGroups, result.completedIds);
+      const nextSelected = new Set(session.selectedIds);
+      for (const sourceId of result.completedIds) nextSelected.delete(sourceId);
+      session.rawGroups = nextGroups;
+      session.selectedIds = nextSelected;
       session.deletion = operation;
       session.stale = result.status !== "complete";
+      setRawGroups(nextGroups);
+      setSelectedIds(new Set(nextSelected));
       return result;
     }).catch((reason) => {
       operation.status = "failed";
@@ -1310,7 +1143,7 @@ function DuplicateManagerPage({ onNavigate }) {
     setDeleteResult(null);
     setDismissedGroupKeys(/* @__PURE__ */ new Set());
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Manager")), /* @__PURE__ */ React.createElement("p", null, "Compare, select, and remove duplicate videos in one operation.")), rawGroups && /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: deletionPending, title: "Clear cached results", onClick: resetSession }, /* @__PURE__ */ React.createElement(RotateCcw, { size: 18 }))), /* @__PURE__ */ React.createElement("section", { className: "dm-controls" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => updateSettings({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"), /* @__PURE__ */ React.createElement("option", { value: "remoteid" }, "Same remote ID"))), settings.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => updateSettings({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5 only"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash only"))), settings.matchType === "phash" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => updateSettings({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Duration delta (sec)"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: settings.maxDurationDelta, onChange: (event) => updateSettings({ maxDurationDelta: Number(event.target.value) }) }))), /* @__PURE__ */ React.createElement(DurationInput, { label: "Minimum length", value: settings.minimumDuration, onChange: (minimumDuration) => updateSettings({ minimumDuration }) }), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: updateSettings, onPick: () => setFolderOpen(true) }), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: loading || deletionPending, onClick: () => runSearch() }, loading ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }) : /* @__PURE__ */ React.createElement(Search, { size: 17 }), loading ? "Searching" : "Find duplicates")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, error), /* @__PURE__ */ React.createElement("button", { onClick: () => setError("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteNotice && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, deleteNotice), /* @__PURE__ */ React.createElement("button", { onClick: () => setDeleteNotice("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteStatus === "pending" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }), /* @__PURE__ */ React.createElement(DeletionProgress, { progress: deleteProgress })), deleteStatus === "complete" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-success" }, /* @__PURE__ */ React.createElement(Check, { size: 17 }), "Deletion finished. ", deleteResult?.completedIds?.length || 0, " videos deleted."), deleteStatus === "partial" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "Deletion finished with errors. ", deleteResult?.completedIds?.length || 0, " deleted; ", deleteResult?.failed?.length || 0, " kept."), deleteStatus === "auth_required" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "Authentication could not be refreshed. ", deleteResult?.completedIds?.length || 0, " deleted; ", deleteResult?.failed?.length || 0, " previously failed; ", deleteResult?.interrupted ? 1 : 0, " interrupted; ", deleteResult?.notAttemptedIds?.length || 0, " not attempted."), rawGroups && /* @__PURE__ */ React.createElement("div", { className: "dm-result-toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "dm-search" }, /* @__PURE__ */ React.createElement(Search, { size: 16 }), /* @__PURE__ */ React.createElement("input", { value: query, onChange: (event) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Manager")), /* @__PURE__ */ React.createElement("p", null, "Compare, select, and remove duplicate videos in one operation.")), rawGroups && /* @__PURE__ */ React.createElement("button", { className: "dm-icon-button", disabled: deletionPending, title: "Clear cached results", onClick: resetSession }, /* @__PURE__ */ React.createElement(RotateCcw, { size: 18 }))), /* @__PURE__ */ React.createElement("section", { className: "dm-controls" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => updateSettings({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"), /* @__PURE__ */ React.createElement("option", { value: "remoteid" }, "Same remote ID"))), settings.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => updateSettings({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5 only"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash only"))), settings.matchType === "phash" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => updateSettings({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Duration delta (sec)"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: settings.maxDurationDelta, onChange: (event) => updateSettings({ maxDurationDelta: Number(event.target.value) }) }))), /* @__PURE__ */ React.createElement(DurationInput, { label: "Minimum length", value: settings.minimumDuration, onChange: (minimumDuration) => updateSettings({ minimumDuration }) }), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: updateSettings, onPick: () => setFolderOpen(true) }), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: loading || deletionPending, onClick: () => runSearch() }, loading ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }) : /* @__PURE__ */ React.createElement(Search, { size: 17 }), loading ? "Searching" : "Find duplicates")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, error), /* @__PURE__ */ React.createElement("button", { onClick: () => setError("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteNotice && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), /* @__PURE__ */ React.createElement("span", null, deleteNotice), /* @__PURE__ */ React.createElement("button", { onClick: () => setDeleteNotice("") }, /* @__PURE__ */ React.createElement(X, { size: 15 }))), deleteStatus === "pending" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }), /* @__PURE__ */ React.createElement(DeletionProgress, { progress: deleteProgress })), deleteStatus === "complete" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-success" }, /* @__PURE__ */ React.createElement(Check, { size: 17 }), "Deletion finished. ", deleteResult?.completedIds?.length || 0, " videos deleted."), deleteStatus === "partial" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "Deletion finished with errors. ", deleteResult?.completedIds?.length || 0, " deleted; ", deleteResult?.failed?.length || 0, " kept."), deleteStatus === "failed" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "The deletion job failed. ", deleteResult?.error || "Review Cove's Jobs panel for details."), deleteStatus === "cancelled" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-warning" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "The deletion job was cancelled. Completed deletions were kept."), deleteStatus === "auth_required" && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), "Authentication could not be refreshed. ", deleteResult?.completedIds?.length || 0, " deleted; ", deleteResult?.failed?.length || 0, " previously failed; ", deleteResult?.interrupted ? 1 : 0, " interrupted; ", deleteResult?.notAttemptedIds?.length || 0, " not attempted."), rawGroups && /* @__PURE__ */ React.createElement("div", { className: "dm-result-toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "dm-search" }, /* @__PURE__ */ React.createElement(Search, { size: 16 }), /* @__PURE__ */ React.createElement("input", { value: query, onChange: (event) => {
     setQuery(event.target.value);
     setPage(1);
   }, placeholder: "Filter title, path, performer, studio, tag, or codec" })), /* @__PURE__ */ React.createElement(PageSizeControl, { value: settings.pageSize, onChange: (pageSize) => updateSettings({ pageSize }) }), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: deletionPending, onClick: () => selectRecommended(filteredGroups, true) }, "Select safe recommendations"), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: deletionPending, onClick: () => clearSelected(filteredGroups) }, "Clear selection")), rawGroups && /* @__PURE__ */ React.createElement("div", { className: "dm-summary" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, filteredGroups.length), " groups"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, filteredGroups.reduce((sum, group) => sum + group.length, 0)), " videos"), /* @__PURE__ */ React.createElement("span", { className: "dm-summary-selected" }, /* @__PURE__ */ React.createElement("strong", null, summary.videos), " selected, ", formatBytes(summary.bytes))), rawGroups && filteredGroups.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dm-empty" }, /* @__PURE__ */ React.createElement(Check, { size: 44 }), /* @__PURE__ */ React.createElement("h2", null, "No duplicate groups"), /* @__PURE__ */ React.createElement("p", null, "Change the filters or run a different match.")), /* @__PURE__ */ React.createElement("div", { className: "dm-groups" }, visibleGroups.map((group, index) => /* @__PURE__ */ React.createElement(
@@ -1824,11 +1657,12 @@ This cannot be undone. The group matched pHash distance 0 and still requires you
     setError("");
     try {
       const sources = [...new Set(group.imageIds.filter((id) => id !== keeper.imageId))];
-      if (sources.length) {
-        await mergeImages(keeper.imageId, sources);
-        await deleteImages(sources);
-      }
-      await pruneImageFiles(keeper.imageId, drop.map((file) => file.id));
+      const cleanup = await runImageDeletionJob({
+        targetImageId: keeper.imageId,
+        sourceImageIds: sources,
+        fileIds: drop.map((file) => file.id)
+      });
+      if (cleanup.status !== "complete") throw new Error(cleanup.failed?.[0]?.message || cleanup.error || "Duplicate image cleanup job failed.");
       await load(page);
     } catch (reason) {
       setError(reason.message);
@@ -1880,8 +1714,8 @@ function DuplicateManagerSettingsPanel() {
   } }));
 }
 var index_default = { components: { DuplicateManagerPage, DuplicateImagesPage, DuplicateManagerSettingsPanel } };
-function DeletionProgress({ progress: progress2 }) {
-  const value = deletionProgress(progress2);
+function DeletionProgress({ progress }) {
+  const value = deletionProgress(progress);
   if (!value) return /* @__PURE__ */ React.createElement(React.Fragment, null, "Preparing deletion. This might take a while.");
   return /* @__PURE__ */ React.createElement(React.Fragment, null, "Deleting video ", /* @__PURE__ */ React.createElement("span", { className: "dm-progress-number", style: { "--dm-progress-digits": value.digits } }, value.current), " of ", value.total, ". This might take a while.");
 }

@@ -1,5 +1,12 @@
-import { copyVideoMetadata, deleteVideo, getVideo, mergeVideoEngagement, ApiRequestError, isAuthenticationRequired } from "./api.js";
+import {
+  getImageDeletionJob,
+  getVideoDeletionJob,
+  startImageDeletionJob,
+  startVideoDeletionJob,
+} from "./api.js";
 import { metadataCount } from "./core.js";
+
+const TERMINAL_STATUSES = new Set(["complete", "partial", "failed", "cancelled"]);
 
 export function buildDeletionQueue(plans, { overwriteConflicts = false } = {}) {
   const queuedIds = new Set();
@@ -22,70 +29,70 @@ export async function runDeletionJob({
   queue,
   options,
   onProgress = () => {},
-  copyMetadata = copyVideoMetadata,
-  removeVideo = deleteVideo,
-  loadVideo = getVideo,
-  mergeEngagement = mergeVideoEngagement,
+  startJob = startVideoDeletionJob,
+  loadJob = getVideoDeletionJob,
+  wait = delay,
+  pollInterval = 750,
 } = {}) {
-  const items = [...(queue || [])];
-  const result = {
-    status: "complete",
-    total: items.length,
-    completedIds: [],
-    failed: [],
-    warnings: [],
-    interrupted: null,
-    notAttemptedIds: [],
-  };
+  const started = await startJob([...(queue || [])], options || {});
+  return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
+}
 
-  for (let index = 0; index < items.length; index++) {
-    const item = items[index];
-    if (options.copyMetadata) {
-      onProgress(progress("metadata", index, items.length, item, result));
-      try {
-        const copied = await copyMetadata(item.targetId, [item.sourceId], {
-          overwriteConflicts: options.overwriteConflictingMetadata,
-        });
-        for (const warning of copied?.warnings || []) result.warnings.push({ sourceId: item.sourceId, message: warning });
-      } catch (reason) {
-        if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
-        result.failed.push({ sourceId: item.sourceId, stage: "metadata", message: reason.message || "Metadata copy failed." });
-        continue;
-      }
-    }
+export async function runImageDeletionJob({
+  targetImageId,
+  sourceImageIds,
+  fileIds,
+  onProgress = () => {},
+  startJob = startImageDeletionJob,
+  loadJob = getImageDeletionJob,
+  wait = delay,
+  pollInterval = 750,
+} = {}) {
+  const started = await startJob(targetImageId, sourceImageIds, fileIds);
+  return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
+}
 
-    try {
-      await mergeEngagement(item.targetId, [item.sourceId]);
-    } catch (reason) {
-      if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
-      result.failed.push({ sourceId: item.sourceId, stage: "engagement", message: reason.message || "Could not preserve engagement metadata." });
-      continue;
-    }
-
-    onProgress(progress("deleting", index, items.length, item, result));
-    try {
-      await removeVideo(item.sourceId, {
-        deleteFiles: options.deleteFiles === true,
-        deleteGenerated: options.deleteGenerated === true,
-      });
-      result.completedIds.push(item.sourceId);
-      onProgress(progress("deleted", index, items.length, item, result));
-    } catch (reason) {
-      if (isAuthenticationRequired(reason)) return stopForAuthentication(result, items, index, reason);
-      const reconciliation = await reconcileDeletion(item.sourceId, loadVideo);
-      if (reconciliation === "deleted") {
-        result.completedIds.push(item.sourceId);
-        onProgress(progress("deleted", index, items.length, item, result));
-      } else if (reconciliation?.authError) {
-        return stopForAuthentication(result, items, index, reconciliation.authError);
-      } else {
-        result.failed.push({ sourceId: item.sourceId, stage: "deletion", message: reason.message || "Deletion failed." });
-      }
-    }
+export async function waitForDeletionJob(started, {
+  loadJob,
+  onProgress = () => {},
+  wait = delay,
+  pollInterval = 750,
+} = {}) {
+  if (!started?.operationId) throw new Error("Cove did not return a deletion job id.");
+  let snapshot = started;
+  while (true) {
+    onProgress(deletionJobProgress(snapshot));
+    if (TERMINAL_STATUSES.has(snapshot.status)) return deletionJobResult(snapshot);
+    await wait(pollInterval);
+    snapshot = await loadJob(started.operationId);
   }
+}
 
-  if (result.failed.length > 0) result.status = "partial";
-  return result;
+export function deletionJobProgress(snapshot) {
+  const total = Math.max(0, Math.trunc(Number(snapshot?.total) || 0));
+  const processed = Math.min(total, Math.max(0, Math.trunc(Number(snapshot?.processed) || 0)));
+  return {
+    operationId: snapshot?.operationId,
+    coreJobId: snapshot?.coreJobId,
+    stage: snapshot?.stage || "queued",
+    current: total === 0 ? 0 : Math.min(total, processed + (TERMINAL_STATUSES.has(snapshot?.status) ? 0 : 1)),
+    total,
+    completed: snapshot?.completedIds?.length || 0,
+    failed: snapshot?.failed?.length || 0,
+    warnings: snapshot?.warnings?.length || 0,
+    sourceId: snapshot?.currentSourceId ?? null,
+    targetId: snapshot?.currentTargetId ?? null,
+  };
+}
+
+export function deletionJobResult(snapshot) {
+  return {
+    ...snapshot,
+    status: snapshot?.status || "failed",
+    completedIds: [...(snapshot?.completedIds || [])],
+    failed: [...(snapshot?.failed || [])],
+    warnings: [...(snapshot?.warnings || [])],
+  };
 }
 
 export function removeVideoIdsFromGroups(groups, ids) {
@@ -93,34 +100,6 @@ export function removeVideoIdsFromGroups(groups, ids) {
   return (groups || []).map((group) => group.filter((video) => !removed.has(video.id))).filter((group) => group.length > 1);
 }
 
-function progress(stage, index, total, item, result) {
-  return {
-    stage,
-    current: index + 1,
-    total,
-    sourceId: item.sourceId,
-    targetId: item.targetId,
-    completed: result.completedIds.length,
-    failed: result.failed.length,
-    warnings: result.warnings.length,
-  };
-}
-
-async function reconcileDeletion(sourceId, loadVideo) {
-  try {
-    await loadVideo(sourceId);
-    return "present";
-  } catch (reason) {
-    if (isAuthenticationRequired(reason)) return { authError: reason };
-    if (reason instanceof ApiRequestError && reason.status === 404) return "deleted";
-    return "unknown";
-  }
-}
-
-function stopForAuthentication(result, items, index, reason) {
-  result.status = "auth_required";
-  result.authError = reason.message || "Cove authentication could not be refreshed.";
-  result.interrupted = { sourceId: items[index].sourceId, message: result.authError };
-  result.notAttemptedIds = items.slice(index + 1).map((item) => item.sourceId);
-  return result;
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

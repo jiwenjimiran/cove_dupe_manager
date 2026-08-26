@@ -4,7 +4,7 @@ import {
   ChevronRight, Columns2, Copy, Folder, Loader2, Pause, Play, RefreshCw, RotateCcw,
   Save, Search, Settings2, Trash2, X,
 } from "@cove/runtime/lucide-react";
-import { deleteImages, findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, mergeImages, pruneImageFiles, saveSettings } from "./api.js";
+import { findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
@@ -12,7 +12,7 @@ import {
   parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
-import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob } from "./deletionJob.js";
+import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageDeletionJob } from "./deletionJob.js";
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -189,21 +189,20 @@ export function DuplicateManagerPage({ onNavigate }) {
       onProgress: (progress) => {
         operation.progress = progress;
         setDeleteProgress({ ...progress });
-        if (progress.stage !== "deleted") return;
-        const nextGroups = removeVideoIdsFromGroups(session.rawGroups || rawGroups, [progress.sourceId]);
-        const nextSelected = new Set(session.selectedIds);
-        nextSelected.delete(progress.sourceId);
-        session.rawGroups = nextGroups;
-        session.selectedIds = nextSelected;
-        setRawGroups(nextGroups);
-        setSelectedIds(new Set(nextSelected));
       },
     }).then((result) => {
       operation.status = result.status;
       operation.result = result;
       operation.notice = deletionResultNotice(result);
+      const nextGroups = removeVideoIdsFromGroups(session.rawGroups || rawGroups, result.completedIds);
+      const nextSelected = new Set(session.selectedIds);
+      for (const sourceId of result.completedIds) nextSelected.delete(sourceId);
+      session.rawGroups = nextGroups;
+      session.selectedIds = nextSelected;
       session.deletion = operation;
       session.stale = result.status !== "complete";
+      setRawGroups(nextGroups);
+      setSelectedIds(new Set(nextSelected));
       return result;
     }).catch((reason) => {
       operation.status = "failed";
@@ -261,6 +260,8 @@ export function DuplicateManagerPage({ onNavigate }) {
     {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} /><DeletionProgress progress={deleteProgress} /></div>}
     {deleteStatus === "complete" && <div className="dm-alert dm-success"><Check size={17} />Deletion finished. {deleteResult?.completedIds?.length || 0} videos deleted.</div>}
     {deleteStatus === "partial" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />Deletion finished with errors. {deleteResult?.completedIds?.length || 0} deleted; {deleteResult?.failed?.length || 0} kept.</div>}
+    {deleteStatus === "failed" && <div className="dm-alert dm-error"><AlertTriangle size={17} />The deletion job failed. {deleteResult?.error || "Review Cove's Jobs panel for details."}</div>}
+    {deleteStatus === "cancelled" && <div className="dm-alert dm-warning"><AlertTriangle size={17} />The deletion job was cancelled. Completed deletions were kept.</div>}
     {deleteStatus === "auth_required" && <div className="dm-alert dm-error"><AlertTriangle size={17} />Authentication could not be refreshed. {deleteResult?.completedIds?.length || 0} deleted; {deleteResult?.failed?.length || 0} previously failed; {deleteResult?.interrupted ? 1 : 0} interrupted; {deleteResult?.notAttemptedIds?.length || 0} not attempted.</div>}
 
     {rawGroups && <div className="dm-result-toolbar">
@@ -785,8 +786,12 @@ export function DuplicateImagesPage() {
     setBusy(true); setError("");
     try {
       const sources = [...new Set(group.imageIds.filter((id) => id !== keeper.imageId))];
-      if (sources.length) { await mergeImages(keeper.imageId, sources); await deleteImages(sources); }
-      await pruneImageFiles(keeper.imageId, drop.map((file) => file.id));
+      const cleanup = await runImageDeletionJob({
+        targetImageId: keeper.imageId,
+        sourceImageIds: sources,
+        fileIds: drop.map((file) => file.id),
+      });
+      if (cleanup.status !== "complete") throw new Error(cleanup.failed?.[0]?.message || cleanup.error || "Duplicate image cleanup job failed.");
       await load(page);
     } catch (reason) { setError(reason.message); setBusy(false); }
   }
