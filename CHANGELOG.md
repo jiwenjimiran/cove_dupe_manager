@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.3 - 2026-08-26
+
+- Queue video duplicate cleanup as a Cove background job so metadata copying and deletion continue independently of the extension page.
+- Move reviewed duplicate-image metadata merging and permanent file cleanup into the same server-owned job workflow.
+- Preserve per-video progress, warnings, and partial-failure reporting while processing each duplicate in an isolated service scope.
+
 ## 2.0.2 - 2026-08-20
 
 - Keep deletion progress text stable across metadata and deletion stages, updating only the current video number.

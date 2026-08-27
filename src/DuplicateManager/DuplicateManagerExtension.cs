@@ -23,7 +23,7 @@ public sealed partial class DuplicateManagerExtension : IExtension, IUIExtension
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "2.0.2";
+    public string Version => "2.0.3";
     public string? Description => "Safe, explainable duplicate review and cleanup for Cove videos and images.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";
@@ -32,7 +32,10 @@ public sealed partial class DuplicateManagerExtension : IExtension, IUIExtension
     public string? MinCoveVersion => "1.1.0";
     public IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>();
 
-    public void ConfigureServices(IServiceCollection services, ExtensionContext context) { }
+    public void ConfigureServices(IServiceCollection services, ExtensionContext context)
+    {
+        services.AddSingleton<DuplicateDeletionJobService>();
+    }
     public void SetStore(IExtensionStore store) => _store = store;
 
     public UIManifest GetUIManifest() => new()
