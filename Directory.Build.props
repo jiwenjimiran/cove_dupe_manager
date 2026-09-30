@@ -4,6 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <CoveContractVersion Condition="'$(CoveContractVersion)' == ''">1.5.1</CoveContractVersion>
     <CovePluginsVersion Condition="'$(CovePluginsVersion)' == ''">1.0.0</CovePluginsVersion>
     <CoveHostAssemblyDir Condition="'$(CoveHostAssemblyDir)' == ''"></CoveHostAssemblyDir>
     <CoveSourceRoot Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">$(MSBuildThisFileDirectory)..\cove</CoveSourceRoot>

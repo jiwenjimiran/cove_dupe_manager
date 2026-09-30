@@ -348,3 +348,12 @@ test("metadata count includes populated fields and relationships", () => {
   const item = video(1, { details: "Details", studioName: "Studio", tags: [{ name: "Tag" }], performers: [{ name: "Person" }] });
   assert.ok(metadataCount(item) >= 5);
 });
+
+
+test("core job result URLs retain their saved search identity", () => {
+  const parsed = duplicateSearchFromUrl("?search=saved-search");
+  assert.equal(parsed.hasSearchParams, true);
+  assert.equal(parsed.searchId, "saved-search");
+  const restored = duplicateSearchFromUrl(duplicateSearchToUrl("?search=saved-search", DEFAULT_SETTINGS));
+  assert.equal(restored.searchId, "saved-search");
+});

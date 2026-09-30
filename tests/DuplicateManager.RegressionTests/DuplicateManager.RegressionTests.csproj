@@ -6,6 +6,12 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\..\src\DuplicateManager\PermanentFileCleanup.cs" Link="PermanentFileCleanup.cs" />
+    <ProjectReference Include="..\..\src\DuplicateManager\DuplicateManager.csproj" />
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Sdk\Cove.Sdk.csproj" />
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Plugins\Cove.Plugins.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Core\Cove.Core.csproj" />
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Data\Cove.Data.csproj" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
   </ItemGroup>
 </Project>

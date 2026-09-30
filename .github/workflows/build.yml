@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Check out Cove 1.1.0 build contracts
+      - name: Check out Cove 1.5.1 build contracts
         uses: actions/checkout@v6
         with:
           repository: yourcove/cove
-          ref: v1.1.0
+          ref: v1.5.1
           path: cove
       - uses: actions/setup-dotnet@v5
         with:
@@ -41,11 +41,11 @@ jobs:
           npm ci
           npm run build
       - name: Test backend file cleanup
-        run: dotnet run --project tests/DuplicateManager.RegressionTests/DuplicateManager.RegressionTests.csproj -c Release
+        run: dotnet run --project tests/DuplicateManager.RegressionTests/DuplicateManager.RegressionTests.csproj -c Release -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Build extension
         run: dotnet build ${{ env.EXTENSION_PROJECT }} -c Release -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Publish extension
-        run: dotnet publish ${{ env.EXTENSION_PROJECT }} -c Release -o artifacts/extension --no-build -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
+        run: dotnet publish ${{ env.EXTENSION_PROJECT }} -c Release -o artifacts/extension --no-build -p:BuildProjectReferences=false -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Resolve version
         id: version
         shell: bash
@@ -53,7 +53,7 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           else
-            echo "value=2.0.3" >> "$GITHUB_OUTPUT"
+            echo "value=2.1.0" >> "$GITHUB_OUTPUT"
           fi
       - name: Package
         shell: bash
