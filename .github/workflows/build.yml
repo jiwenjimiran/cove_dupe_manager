@@ -40,8 +40,8 @@ jobs:
         run: |
           npm ci
           npm run build
-      - name: Test backend file cleanup
-        run: dotnet run --project tests/DuplicateManager.RegressionTests/DuplicateManager.RegressionTests.csproj -c Release -p:CoveSourceRoot=${{ github.workspace }}/cove
+      - name: Test backend search and cleanup
+        run: dotnet run --project tests/DuplicateManager.RegressionTests/DuplicateManager.RegressionTests.csproj -c Release -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Build extension
         run: dotnet build ${{ env.EXTENSION_PROJECT }} -c Release -p:UseLocalCovePlugins=true -p:CoveSourceRoot=${{ github.workspace }}/cove
       - name: Publish extension
