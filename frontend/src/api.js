@@ -166,21 +166,70 @@ export function mergeVideoEngagement(targetId, sourceIds) {
   });
 }
 
-export function startVideoDeletionJob(items, options) {
-  return request("/api/ext/duplicate-manager/videos/deletion-jobs", {
-    method: "POST",
-    body: JSON.stringify({
-      items,
-      copyMetadata: options?.copyMetadata === true,
-      overwriteConflictingMetadata: options?.overwriteConflictingMetadata === true,
-      deleteFiles: options?.deleteFiles === true,
-      deleteGenerated: options?.deleteGenerated === true,
-    }),
+// Review selections become durable core groups; core owns authorization, merging and deletion.
+const cleanupOperations = new Map();
+
+export async function startVideoDeletionJob(items, options = {}) {
+  const prepared = await request("/api/ext/duplicate-manager/videos/cleanup-searches", {
+    method: "POST", body: JSON.stringify({ items, ...options }),
   });
+  if (!prepared?.searchId || !Array.isArray(prepared.groups)) throw new Error("Cove did not return a cleanup search.");
+  const operation = { ...prepared, total: items.length, failed: [], coreJobId: null };
+  cleanupOperations.set(prepared.searchId, operation);
+  const batches = options.overwriteConflictingMetadata && options.copyMetadata
+    ? prepared.groups.map(group => ({ groups: [group], metadata: group.metadata }))
+    : [{ groups: prepared.groups }];
+  for (const batch of batches) {
+    try {
+      const result = await request(`/api/videos/duplicate-searches/${prepared.searchId}/resolve`, {
+        method: "POST", body: JSON.stringify({
+          groupIds: batch.groups.map(group => group.id), action: options.copyMetadata ? "merge" : "remove",
+          deleteFiles: options.deleteFiles === true, deleteGenerated: options.deleteGenerated === true,
+          ...(options.copyMetadata && batch.metadata ? { metadata: batch.metadata } : {}),
+        }),
+      });
+      if (result?.queuedGroupCount !== batch.groups.length) throw new Error("Cove did not queue every reviewed group for cleanup.");
+      operation.coreJobId = result.jobId || operation.coreJobId;
+      for (const group of batch.groups) group.queued = true;
+    } catch (reason) {
+      // A dropped response can still have queued work. Poll every submitted group to reconcile it.
+      for (const group of batch.groups) { group.queued = true; group.queueError = reason.message; }
+    }
+  }
+  return getVideoDeletionJob(prepared.searchId);
 }
 
-export function getVideoDeletionJob(operationId) {
-  return request(`/api/ext/duplicate-manager/videos/deletion-jobs/${encodeURIComponent(operationId)}`);
+export async function getVideoDeletionJob(operationId) {
+  const operation = cleanupOperations.get(operationId);
+  if (!operation) throw new Error("The cleanup operation is no longer cached. Check Cove's Jobs and duplicate searches for its result.");
+  const completedIds = [], failed = [...operation.failed];
+  let pending = false;
+  for (let offset = 0; offset < operation.groups.length; offset += 50) {
+    const batch = operation.groups.slice(offset, offset + 50).filter(group => group.queued);
+    if (!batch.length) continue;
+    const result = await request(`/api/videos/duplicate-searches/${operationId}/groups?perPage=50&ids=${batch.map(group => group.id).join(",")}`);
+    const lookup = new Map((result?.items || []).map(group => [group.id, group]));
+    for (const group of batch) {
+      const current = lookup.get(group.id);
+      if (!current) {
+        for (const sourceId of group.sourceIds) failed.push({ sourceId, stage: "deletion", message: "The cleanup group is no longer available." });
+        continue;
+      }
+      const remaining = new Set((current.videos || []).map(video => video.id));
+      for (const sourceId of group.sourceIds) {
+        if (!remaining.has(sourceId)) completedIds.push(sourceId);
+        else if (current.status === "failed" || current.status === "resolved" || current.status === "unresolved" || current.status === "ignored")
+          failed.push({ sourceId, stage: "deletion", message: current.error || group.queueError || "Cove retained this video. Review it before retrying." });
+        else pending = true;
+      }
+    }
+  }
+  return {
+    operationId, coreJobId: operation.coreJobId, total: operation.total,
+    processed: completedIds.length + failed.length, completedIds, failed, warnings: [],
+    status: pending ? "running" : failed.length ? (completedIds.length ? "partial" : "failed") : "complete",
+    stage: pending ? "deletion" : "complete",
+  };
 }
 
 export function findDuplicateImages({ page = 1, pageSize = 25, minBytes = 0 } = {}) {
@@ -216,13 +265,75 @@ export function deleteImages(ids) {
   });
 }
 
-export function findDuplicates(options) {
-  const params = new URLSearchParams({
+export async function findDuplicates(options, {
+  onProgress = () => {}, wait = (ms) => new Promise(resolve => setTimeout(resolve, ms)), pollInterval = 1000, resumeSearchId = null,
+} = {}) {
+  const body = {
     matchType: options.matchType,
-    distance: String(options.matchType === "phash" ? options.phashDistance : 0),
-  });
-  if (options.matchType === "phash") params.set("durationDiff", String(options.maxDurationDelta));
-  return request(`/api/videos/duplicates?${params}`);
+    distance: options.matchType === "phash" ? options.phashDistance : 0,
+    durationDiff: options.maxDurationDelta,
+    minimumDuration: options.minimumDuration || 0,
+    includePaths: options.folderMode === "include" ? options.includedPaths || [] : [],
+    excludePaths: options.folderMode === "exclude" ? options.includedPaths || [] : [],
+  };
+  const cacheKey = `duplicate-manager-search:${searchOwnerKey()}:${JSON.stringify(body)}`;
+  let started = resumeSearchId ? { searchId: resumeSearchId, jobId: null } : null;
+  if (!resumeSearchId) {
+    try { started = JSON.parse(globalThis.sessionStorage?.getItem(cacheKey) || "null"); } catch { /* Storage may be disabled. */ }
+  }
+  if (!started?.searchId || !resumeSearchId && !started?.jobId) {
+    started = await request("/api/ext/duplicate-manager/videos/duplicate-searches", { method: "POST", body: JSON.stringify(body) });
+    if (!started?.searchId || !started?.jobId) throw new Error("Cove did not return search and job identifiers.");
+    try { globalThis.sessionStorage?.setItem(cacheKey, JSON.stringify(started)); } catch { /* Optional resume cache. */ }
+  }
+  onProgress({ ...started, status: "pending" });
+  const base = `/api/videos/duplicate-searches/${encodeURIComponent(started.searchId)}`;
+  let terminal = false;
+  try {
+    while (true) {
+      const summary = await request(base);
+      started.jobId = summary.jobId || started.jobId;
+      onProgress({ ...summary, searchId: started.searchId, jobId: started.jobId });
+      if (summary.status === "completed") break;
+      if (["failed", "cancelled", "interrupted"].includes(summary.status)) {
+        terminal = true;
+        throw new Error(summary.error || `Duplicate search ${summary.status}.`);
+      }
+      if (!["pending", "running"].includes(summary.status)) throw new Error("Cove returned an unknown duplicate search status.");
+      await wait(pollInterval);
+    }
+    const groups = [];
+    for (let page = 1; ; page++) {
+      const result = await request(`${base}/groups?page=${page}&perPage=50&status=unresolved`);
+      if (!Array.isArray(result?.items)) throw new Error("Cove returned an invalid duplicate group page.");
+      groups.push(...result.items.map(group => group.videos || []).filter(group => group.length > 1));
+      onProgress({ ...started, status: "loading", loadedGroups: (page - 1) * 50 + result.items.length, totalGroups: result.totalCount });
+      if (page * 50 >= result.totalCount) break;
+      if (!result.items.length) throw new Error("Cove returned an incomplete duplicate group page.");
+    }
+    try { globalThis.sessionStorage?.removeItem(cacheKey); } catch { /* Optional resume cache. */ }
+    return groups;
+  } catch (reason) {
+    if (terminal || reason instanceof ApiRequestError && [404, 410].includes(reason.status)) {
+      try { globalThis.sessionStorage?.removeItem(cacheKey); } catch { /* Optional resume cache. */ }
+    }
+    throw reason;
+  }
+}
+
+function searchOwnerKey() {
+  const auth = readAuthState();
+  const token = auth.shareToken || auth.accessToken;
+  if (!token) return "session";
+  try {
+    const part = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(globalThis.atob(part.padEnd(Math.ceil(part.length / 4) * 4, "=")));
+    return `${auth.shareToken ? "share" : "user"}:${payload.sub || payload.nameid || payload["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"] || payload.jti || token}`;
+  } catch { return `${auth.shareToken ? "share" : "access"}:${token}`; }
+}
+
+export function cancelDuplicateSearch(jobId) {
+  return request(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
 }
 
 export function deleteVideos(ids, { deleteFiles, deleteGenerated }) {

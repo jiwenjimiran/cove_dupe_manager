@@ -1,11 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <Version>2.1.0</Version>
     <AssemblyName>Cove.DuplicateManager</AssemblyName>
     <RootNamespace>Cove.DuplicateManager</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <None Include="Search\NOTICE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <None Include="Search\COPYING" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     <None Include="extension.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     <None Include="dist\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
@@ -28,27 +31,27 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(UseLocalCovePlugins)' == 'true' and '$(CoveHostAssemblyDir)' == ''">
-    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' != ''">
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' != ''">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
-    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Sdk\Cove.Sdk.csproj" Condition="'$(CoveSourceRoot)' != ''">
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Sdk\Cove.Sdk.csproj" Condition="'$(CoveSourceRoot)' != ''">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
-    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Core\Cove.Core.csproj" Condition="'$(CoveSourceRoot)' != ''">
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Core\Cove.Core.csproj" Condition="'$(CoveSourceRoot)' != ''">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
-    <ProjectReference Include="$(CoveSourceRoot)\src\Cove.Data\Cove.Data.csproj" Condition="'$(CoveSourceRoot)' != ''">
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(CoveSourceRoot)\src\Cove.Data\Cove.Data.csproj" Condition="'$(CoveSourceRoot)' != ''">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
-    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Plugins\Cove.Plugins.csproj')">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
-    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj')">
+    <ProjectReference AdditionalProperties="Version=$(CoveContractVersion);CoveCiVersion=true" Include="$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj" Condition="'$(CoveSourceRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\..\src\Cove.Plugins\Cove.Plugins.csproj')">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>

@@ -240,21 +240,28 @@ test("comparison loads Cove's configured transcode resolutions", async () => {
   assert.equal(requestedPath, "/api/stream/video/42/resolutions");
 });
 
-test("duplicate requests pass Cove's title and remote ID match types through", async () => {
-  const paths = [];
+test("background duplicate requests pass title and remote ID scope to Cove", async () => {
+  const bodies = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (path) => {
-    paths.push(path);
-    return { ok: true, text: async () => "[]", statusText: "OK" };
+  globalThis.fetch = async (path, options = {}) => {
+    let body;
+    if (options.method === "POST") {
+      assert.equal(path, "/api/ext/duplicate-manager/videos/duplicate-searches");
+      bodies.push(JSON.parse(options.body));
+      body = { searchId: "search", jobId: "job" };
+    } else if (path.includes("/groups?")) body = { items: [], totalCount: 0 };
+    else body = { status: "completed" };
+    return { ok: true, text: async () => JSON.stringify(body), status: 200 };
   };
   try {
-    await findDuplicates({ matchType: "title", phashDistance: 0 });
-    await findDuplicates({ matchType: "remoteid", phashDistance: 0 });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-  assert.equal(new URL(paths[0], "http://cove.test").searchParams.get("matchType"), "title");
-  assert.equal(new URL(paths[1], "http://cove.test").searchParams.get("matchType"), "remoteid");
+    await findDuplicates({ matchType: "title", folderMode: "include", includedPaths: ["/library"], minimumDuration: 30 });
+    await findDuplicates({ matchType: "remoteid", folderMode: "exclude", includedPaths: ["/trash"] });
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(bodies[0].matchType, "title");
+  assert.deepEqual(bodies[0].includePaths, ["/library"]);
+  assert.equal(bodies[0].minimumDuration, 30);
+  assert.equal(bodies[1].matchType, "remoteid");
+  assert.deepEqual(bodies[1].excludePaths, ["/trash"]);
 });
 
 test("permanent deletion passes the source-file choice directly to Cove", async () => {
@@ -273,32 +280,27 @@ test("permanent deletion passes the source-file choice directly to Cove", async 
   assert.deepEqual(requestBody, { ids: [42], deleteFiles: true, deleteGenerated: true });
 });
 
-test("video cleanup queues one server-side deletion job", async () => {
+test("reviewed video cleanup uses core resolution with metadata and source-file options", async () => {
   const originalFetch = globalThis.fetch;
-  let requestBody;
+  const calls = [];
   globalThis.fetch = async (path, options = {}) => {
-    assert.equal(path, "/api/ext/duplicate-manager/videos/deletion-jobs");
-    assert.equal(options.method, "POST");
-    requestBody = JSON.parse(options.body);
-    return { ok: true, status: 202, text: async () => JSON.stringify({ operationId: "operation-1" }), statusText: "Accepted" };
+    calls.push({ path, body: options.body ? JSON.parse(options.body) : null });
+    const body = path.endsWith("cleanup-searches")
+      ? { searchId: "cleanup", groups: [{ id: 1, targetId: 10, sourceIds: [11], metadata: { fields: { cover: "target" } } }] }
+      : path.endsWith("resolve") ? { queuedGroupCount: 1, jobId: "core-job" }
+      : { items: [{ id: 1, status: "resolved", videos: [{ id: 10 }] }] };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   };
   try {
-    await startVideoDeletionJob([{ targetId: 10, sourceId: 11 }], {
-      copyMetadata: true,
-      overwriteConflictingMetadata: false,
-      deleteFiles: true,
-      deleteGenerated: true,
+    const result = await startVideoDeletionJob([{ targetId: 10, sourceId: 11 }], {
+      copyMetadata: true, overwriteConflictingMetadata: false, deleteFiles: true, deleteGenerated: true,
     });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-  assert.deepEqual(requestBody, {
-    items: [{ targetId: 10, sourceId: 11 }],
-    copyMetadata: true,
-    overwriteConflictingMetadata: false,
-    deleteFiles: true,
-    deleteGenerated: true,
-  });
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.completedIds, [11]);
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(calls[0].path, "/api/ext/duplicate-manager/videos/cleanup-searches");
+  assert.deepEqual(calls[0].body.items, [{ targetId: 10, sourceId: 11 }]);
+  assert.deepEqual(calls[1].body, { groupIds: [1], action: "merge", deleteFiles: true, deleteGenerated: true });
 });
 
 test("reviewed image cleanup queues metadata merge and file pruning together", async () => {

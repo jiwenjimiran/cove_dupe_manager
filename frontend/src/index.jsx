@@ -4,7 +4,7 @@ import {
   ChevronRight, Columns2, Copy, Folder, Loader2, Pause, Play, RefreshCw, RotateCcw,
   Save, Search, Settings2, Trash2, X,
 } from "@cove/runtime/lucide-react";
-import { findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
+import { cancelDuplicateSearch, findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
@@ -28,6 +28,7 @@ export function DuplicateManagerPage({ onNavigate }) {
   const [page, setPage] = useState(initialUrlSearch.hasSearchParams ? initialUrlSearch.page : session.page);
   const [selectedIds, setSelectedIds] = useState(new Set(session.selectedIds));
   const [loading, setLoading] = useState(false);
+  const [searchProgress, setSearchProgress] = useState(null);
   const [error, setError] = useState("");
   const [compareGroup, setCompareGroup] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -48,7 +49,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       setSettingsReady(true);
       if (initialUrlSearch.hasSearchParams && !autoSearchStarted.current) {
         autoSearchStarted.current = true;
-        runSearch(next, initialUrlSearch.page);
+        runSearch(next, initialUrlSearch.page, initialUrlSearch.searchId);
       }
     }).catch((reason) => {
       if (cancelled) return;
@@ -56,7 +57,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       setSettingsReady(true);
       if (initialUrlSearch.hasSearchParams && !autoSearchStarted.current) {
         autoSearchStarted.current = true;
-        runSearch(initialSettings, initialUrlSearch.page);
+        runSearch(initialSettings, initialUrlSearch.page, initialUrlSearch.searchId);
       }
     });
     return () => { cancelled = true; };
@@ -104,13 +105,31 @@ export function DuplicateManagerPage({ onNavigate }) {
 
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
-  async function runSearch(options = settings, resultPage = 1) {
+  async function runSearch(options = settings, resultPage = 1, resumeSearchId = null) {
     if (deletionPending) return;
-    const searchSettings = normalizeSettings(options);
+    let searchSettings = normalizeSettings(options);
     setLoading(true);
+    setSearchProgress(null);
     setError("");
     try {
-      const result = await findDuplicates(searchSettings);
+      const result = await findDuplicates(searchSettings, { resumeSearchId, onProgress: (progress) => {
+        setSearchProgress(progress);
+        if (resumeSearchId && progress.includePaths) {
+          const include = progress.includePaths || [], exclude = progress.excludePaths || [];
+          searchSettings = normalizeSettings({ ...searchSettings,
+            matchType: String(progress.matchType).toLowerCase(), phashDistance: progress.distance,
+            maxDurationDelta: progress.durationDiff, minimumDuration: progress.minimumDuration,
+            folderMode: include.length ? "include" : exclude.length ? "exclude" : "all",
+            includedPaths: include.length ? include : exclude,
+          });
+          setSettings(searchSettings);
+        }
+        if (progress.searchId && typeof window !== "undefined") {
+          const params = new URLSearchParams(window.location.search);
+          params.set("search", progress.searchId);
+          window.history.replaceState(window.history.state, "", `${window.location.pathname}?${params}${window.location.hash}`);
+        }
+      } });
       setRawGroups(result);
       setSelectedIds(new Set());
       setDismissedGroupKeys(new Set());
@@ -255,6 +274,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       <button className="dm-primary" disabled={loading || deletionPending} onClick={() => runSearch()}>{loading ? <Loader2 className="dm-spin" size={17} /> : <Search size={17} />}{loading ? "Searching" : "Find duplicates"}</button>
     </section>
 
+    {loading && <div className="dm-alert"><Loader2 className="dm-spin" size={17} /><span>{searchProgress?.status === "loading" ? `Loading duplicate groups: ${searchProgress.loadedGroups} of ${searchProgress.totalGroups}` : `Background search ${searchProgress?.status || "starting"}. This may take a while.`}</span>{searchProgress?.jobId && searchProgress.status !== "loading" && <button onClick={() => cancelDuplicateSearch(searchProgress.jobId).catch(reason => setError(reason.message))}>Cancel search</button>}</div>}
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
     {deleteNotice && <div className="dm-alert dm-warning"><AlertTriangle size={17} /><span>{deleteNotice}</span><button onClick={() => setDeleteNotice("")}><X size={15} /></button></div>}
     {deleteStatus === "pending" && <div className="dm-alert"><Loader2 className="dm-spin" size={17} /><DeletionProgress progress={deleteProgress} /></div>}

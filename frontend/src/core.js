@@ -72,7 +72,7 @@ export function normalizeSettings(value) {
 
 export function duplicateSearchFromUrl(search) {
   const params = new URLSearchParams(search || "");
-  const hasSearchParams = SEARCH_PARAM_NAMES.some((name) => params.has(name));
+  const hasSearchParams = params.has("search") || SEARCH_PARAM_NAMES.some((name) => params.has(name));
   const patch = {};
   if (params.has("match")) patch.matchType = params.get("match");
   if (params.has("algorithm")) patch.fingerprintAlgorithm = params.get("algorithm");
@@ -84,7 +84,7 @@ export function duplicateSearchFromUrl(search) {
   if (params.has("groups")) patch.pageSize = params.get("groups");
   const page = Math.max(1, Math.trunc(Number(params.get("page")) || 1));
   const query = params.get("query") || "";
-  return { hasSearchParams, settings: patch, page, query };
+  return { hasSearchParams, settings: patch, page, query, searchId: params.get("search") || null };
 }
 
 export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "") {

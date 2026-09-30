@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.0 - 2026-09-30 (test build)
+
+- Replace the removed synchronous search with an extension-owned Cove background job and core persisted-result endpoints.
+- Remove candidate, retained-row/memory, visual-comparison/match, and result-group admission caps; retain cancellation, paged loading/persistence and field validation.
+- Union visual matches as they are found rather than retaining every matching pair.
+- Resume pending searches after refresh and expose cancellation in the search page.
+- Use Cove core duplicate resolution for reviewed video cleanup, metadata/provenance migration, keeper reservations, and physical deletion.
+- Preserve explicit keeper covers or fill generated keeper covers from explicit donors, independently of metadata overwriting.
+- Require Cove 1.5.1 and pin build/CI contracts to v1.5.1.
+- Include AGPL-3.0 license/attribution for the adapted Cove search worker.
+
 ## 2.0.3 - 2026-08-26
 
 - Queue video duplicate cleanup as a Cove background job so metadata copying and deletion continue independently of the extension page.

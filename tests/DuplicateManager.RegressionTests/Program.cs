@@ -30,6 +30,8 @@ finally
     Directory.Delete(root, true);
 }
 
+await SearchRegressionTests.RunAsync();
+
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);

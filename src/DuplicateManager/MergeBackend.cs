@@ -21,11 +21,6 @@ public sealed partial class DuplicateManagerExtension
         var group = endpoints.MapGroup("/api/ext/duplicate-manager");
         group.MapPost("/videos/engagement-merge", MergeVideoEngagementAsync)
             .RequireCovePermission("videos.write");
-        group.MapPost("/videos/deletion-jobs", StartVideoDeletionJobAsync)
-            .RequireCovePermission("videos.write")
-            .RequireCovePermission("videos.delete");
-        group.MapGet("/videos/deletion-jobs/{operationId}", GetVideoDeletionJob)
-            .RequireCovePermission("videos.read");
         group.MapGet("/images/duplicates", FindDuplicateImagesAsync)
             .RequireCovePermission("images.read");
         group.MapPost("/images/deletion-jobs", StartImageDeletionJobAsync)
