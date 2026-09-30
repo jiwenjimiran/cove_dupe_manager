@@ -6,4 +6,4 @@ Changes: extension namespace/registration, unlimited candidate and result admiss
 streamed visual unions, and broader configurable distance/duration ranges.
 
 Corresponding extension source: https://github.com/jiwenjimiran/cove_dupe_manager
-The 2.1.0 build is for local testing and has not yet been released.
+Corresponding source for this release: https://github.com/jiwenjimiran/cove_dupe_manager/tree/v2.1.0

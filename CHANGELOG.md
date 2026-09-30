@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.0 - 2026-09-30 (test build)
+## 2.1.0 - 2026-09-30
 
 - Replace the removed synchronous search with an extension-owned Cove background job and core persisted-result endpoints.
 - Remove candidate, retained-row/memory, visual-comparison/match, and result-group admission caps; retain cancellation, paged loading/persistence and field validation.
