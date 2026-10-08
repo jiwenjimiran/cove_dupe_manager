@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.1 - 2026-10-08
+
+- Add exact-duration duplicate search using each video's longest file duration, with no pHash or duration-delta tolerance.
+- Require a warning confirmation when selecting exact duration and before automatic searches that restore it from a URL or saved setting.
+- Show the matched duration on each result group and exclude missing or zero file durations.
+
 ## 2.1.0 - 2026-09-30
 
 - Replace the removed synchronous search with an extension-owned Cove background job and core persisted-result endpoints.

@@ -24,6 +24,7 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Curated cover preservation: keep the keeper's saved cover, otherwise carry over a donor's saved cover; metadata overwriting never replaces it with a generated frame
 - Exact MD5/OSHash and configurable visual pHash matching
 - Same-title and same-remote-ID matching compatible with Cove's built-in finder
+- Exact-duration matching for videos with the same longest-file length, with a confirmation warning because unrelated videos can share a duration
 - Shareable search URLs that restore controls, result-filter queries, and run the duplicate search after refresh
 - All/include/exclude folder scope, text filtering, group pagination, and session-cached results
 - Select-to-delete workflow with automatic "keep recommended" rules
@@ -37,7 +38,7 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Saved metadata-transfer defaults, including checked-by-default missing-value copying and optional conflict overwriting
 - Defaults under `Settings -> Extensions -> Installed -> Duplicate Manager`
 
-Version 2.1.0 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
+Version 2.1.1 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
 
 ## Build
 

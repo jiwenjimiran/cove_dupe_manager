@@ -50,7 +50,7 @@ export function normalizeSettings(value) {
   return {
     ...DEFAULT_SETTINGS,
     ...incoming,
-    matchType: ["fingerprint", "phash", "title", "remoteid"].includes(incoming.matchType) ? incoming.matchType : "fingerprint",
+    matchType: ["fingerprint", "phash", "title", "remoteid", "duration"].includes(incoming.matchType) ? incoming.matchType : "fingerprint",
     fingerprintAlgorithm: ["any", "md5", "oshash"].includes(incoming.fingerprintAlgorithm) ? incoming.fingerprintAlgorithm : "any",
     phashDistance: clampNumber(incoming.phashDistance, 0, 64, 8),
     maxDurationDelta: clampNumber(incoming.maxDurationDelta, 0, 86400, 10),
@@ -131,7 +131,7 @@ export function prepareGroups(apiGroups, options) {
   const scoped = (apiGroups || [])
     .map((group) => group.filter((video) =>
       matchesFolderScope(video, paths, settings.folderMode)
-      && Number(primaryFile(video)?.duration || 0) >= settings.minimumDuration))
+      && (settings.matchType === "duration" ? exactMatchDuration(video) : Number(primaryFile(video)?.duration || 0)) >= settings.minimumDuration))
     .filter((group) => group.length > 1);
 
   if (settings.matchType === "phash") return partitionPhashGroups(scoped, settings);
@@ -289,6 +289,13 @@ export function metadataCount(video) {
 
 export function primaryFile(video) {
   return [...(video?.files || [])].sort((a, b) => fileResolution(b) - fileResolution(a) || Number(b.size || 0) - Number(a.size || 0))[0] || null;
+}
+
+export function exactMatchDuration(video) {
+  return (video?.files || []).reduce((longest, file) => {
+    const duration = Number(file.duration);
+    return Number.isFinite(duration) ? Math.max(longest, duration) : longest;
+  }, 0);
 }
 
 export function formatBytes(value) {

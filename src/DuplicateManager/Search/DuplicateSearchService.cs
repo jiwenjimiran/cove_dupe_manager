@@ -122,6 +122,7 @@ public sealed class DuplicateSearchJobService(
         {
             "phash" or "visual" => "phash",
             "title" => "title",
+            "duration" or "exactduration" or "exact-duration" => "duration",
             "remoteid" or "remote-id" or "remote_id" => "remoteId",
             "files" or "same-video" or "same_video" => FilesMatchType,
             _ => "fingerprint",
@@ -158,6 +159,7 @@ public sealed class DuplicateSearchJobService(
     {
         "phash" => "visual similarity",
         "title" => "title",
+        "duration" => "exact duration",
         "remoteId" => "remote ID",
         FilesMatchType => "files on the same video",
         _ => "file fingerprint",
@@ -247,6 +249,10 @@ public sealed class DuplicateSearchExecutionService(
                 case "title":
                     progress.Report(0.1, "Comparing video titles");
                     groups = await FindTitleGroupsAsync(ids, ignored, memoryBudget, ct);
+                    break;
+                case "duration":
+                    progress.Report(0.1, "Comparing exact video durations");
+                    groups = await FindDurationGroupsAsync(ids, ignored, memoryBudget, ct);
                     break;
                 case "remoteId":
                     progress.Report(0.1, "Comparing remote IDs");
@@ -407,6 +413,35 @@ public sealed class DuplicateSearchExecutionService(
             rows.GroupBy(row => NormalizeTitle(row.Title), StringComparer.OrdinalIgnoreCase)
                 .Where(bucket => bucket.Key.Length > 0)
                 .Select(bucket => bucket.Select(row => row.VideoId)),
+            ignored,
+            memoryBudget);
+    }
+
+    private async Task<List<List<int>>> FindDurationGroupsAsync(
+        int[] candidateVideoIds,
+        HashSet<(int Low, int High)> ignored,
+        DuplicateSearchMemoryBudget memoryBudget,
+        CancellationToken ct)
+    {
+        // A video may have multiple files. Give it one duration so it cannot bridge
+        // groups with different lengths. The longest file matches Cove's MaxDuration.
+        var durations = new Dictionary<int, double>();
+        foreach (var chunk in candidateVideoIds.Chunk(QueryChunkSize))
+        {
+            var query = db.VideoFiles
+                .Where(file => file.VideoId.HasValue && chunk.Contains(file.VideoId.Value) && file.Duration > 0)
+                .Select(file => new { SourceId = file.Id, VideoId = file.VideoId!.Value, file.Duration })
+                .AsNoTracking();
+            await foreach (var row in ReadCandidatePagesAsync(query, row => row.SourceId, memoryBudget,
+                _ => (0, 0), false, ct))
+            {
+                if (double.IsFinite(row.Duration) && (!durations.TryGetValue(row.VideoId, out var current) || row.Duration > current))
+                    durations[row.VideoId] = row.Duration;
+            }
+        }
+
+        return GroupBuckets(
+            durations.GroupBy(row => row.Value).Select(bucket => bucket.Select(row => row.Key)),
             ignored,
             memoryBudget);
     }

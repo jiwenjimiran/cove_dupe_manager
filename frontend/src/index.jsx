@@ -7,7 +7,7 @@ import {
 import { cancelDuplicateSearch, findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
-  deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
+  deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, exactMatchDuration, filterGroups, formatBytes,
   displayPath, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
   parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
@@ -16,11 +16,16 @@ import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageD
 
 const { useEffect, useMemo, useRef, useState } = React;
 
+function confirmDurationMatch() {
+  return window.confirm("Exact duration only compares video lengths. Different videos can have the same duration and will be grouped together. Review every match carefully before deleting anything. Continue?");
+}
+
 export function DuplicateManagerPage({ onNavigate }) {
   const session = getSession();
   const initialUrlSearch = useRef(duplicateSearchFromUrl(typeof window === "undefined" ? "" : window.location.search)).current;
   const initialSettings = useRef(normalizeSettings({ ...(session.searchSettings || DEFAULT_SETTINGS), ...initialUrlSearch.settings })).current;
   const autoSearchStarted = useRef(false);
+  const durationMatchConfirmed = useRef(false);
   const [settings, setSettings] = useState(initialSettings);
   const [appliedSettings, setAppliedSettings] = useState(session.searchSettings ? normalizeSettings(session.searchSettings) : null);
   const [rawGroups, setRawGroups] = useState(session.rawGroups);
@@ -108,6 +113,10 @@ export function DuplicateManagerPage({ onNavigate }) {
   async function runSearch(options = settings, resultPage = 1, resumeSearchId = null) {
     if (deletionPending) return;
     let searchSettings = normalizeSettings(options);
+    if (searchSettings.matchType === "duration" && !durationMatchConfirmed.current) {
+      if (!confirmDurationMatch()) return;
+      durationMatchConfirmed.current = true;
+    }
     setLoading(true);
     setSearchProgress(null);
     setError("");
@@ -149,6 +158,11 @@ export function DuplicateManagerPage({ onNavigate }) {
   }
 
   function updateSettings(patch) {
+    if (patch.matchType === "duration" && settings.matchType !== "duration") {
+      if (!confirmDurationMatch()) return;
+      durationMatchConfirmed.current = true;
+    }
+    if (patch.matchType && patch.matchType !== "duration") durationMatchConfirmed.current = false;
     setSettings((current) => normalizeSettings({ ...current, ...patch }));
   }
 
@@ -263,7 +277,7 @@ export function DuplicateManagerPage({ onNavigate }) {
     </header>
 
     <section className="dm-controls">
-      <label><span>Match type</span><select value={settings.matchType} onChange={(event) => updateSettings({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>
+      <label><span>Match type</span><select value={settings.matchType} onChange={(event) => updateSettings({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="duration">Exact duration</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>
       {settings.matchType === "fingerprint" && <label><span>Algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => updateSettings({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5 only</option><option value="oshash">OSHash only</option></select></label>}
       {settings.matchType === "phash" && <>
         <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => updateSettings({ phashDistance: Number(event.target.value) })} /></label>
@@ -331,7 +345,7 @@ function DuplicateGroup({ group, number, settings, matchSettings, selectedIds, o
   const risk = groupRisk(group);
   const reason = keeperReason(group, settings);
   return <section className="dm-group">
-    <header><div><strong>Group {number}</strong><span>{group.length} videos</span>{risk.score > 0 && <span title={risk.notes.join("; ")}>risk {risk.score}</span>}<span title={reason.text}>{reason.step}</span></div><div>
+    <header><div><strong>Group {number}</strong><span>{group.length} videos</span>{matchSettings.matchType === "duration" && <span>Exact duration: {exactMatchDuration(group[0])} s</span>}{risk.score > 0 && <span title={risk.notes.join("; ")}>risk {risk.score}</span>}<span title={reason.text}>{reason.step}</span></div><div>
       <button className="dm-secondary" onClick={onCompare}><Columns2 size={15} />Compare</button>
       <button className="dm-secondary" onClick={onSelectRecommended}>Keep recommended</button>
       <button className="dm-icon-button" title="Remove this comparison" aria-label="Remove this comparison" onClick={onDismiss}><X size={16} /></button>
@@ -831,7 +845,10 @@ export function DuplicateManagerSettingsPanel() {
   const [message, setMessage] = useState("");
   const [folderOpen, setFolderOpen] = useState(false);
   useEffect(() => { loadSettings().then((value) => setSettings(normalizeSettings(value))).catch((reason) => setMessage(reason.message)).finally(() => setLoading(false)); }, []);
-  function update(patch) { setSettings((current) => normalizeSettings({ ...current, ...patch })); }
+  function update(patch) {
+    if (patch.matchType === "duration" && settings.matchType !== "duration" && !confirmDurationMatch()) return;
+    setSettings((current) => normalizeSettings({ ...current, ...patch }));
+  }
   function moveRule(index, delta) { const rules = [...settings.keeperRules]; const target = index + delta; if (target < 0 || target >= rules.length) return; [rules[index], rules[target]] = [rules[target], rules[index]]; update({ keeperRules: rules }); }
   function removeRule(index) { update({ keeperRules: settings.keeperRules.filter((_, itemIndex) => itemIndex !== index) }); }
   async function save() { setSaving(true); setMessage(""); try { setSettings(normalizeSettings(await saveSettings(settings))); setMessage("Settings saved."); } catch (reason) { setMessage(reason.message); } finally { setSaving(false); } }
@@ -839,7 +856,7 @@ export function DuplicateManagerSettingsPanel() {
   const availableRules = Object.keys(RULE_LABELS).filter((rule) => !settings.keeperRules.includes(rule));
   return <div className="dm-settings">
     <div className="dm-settings-heading"><div><h3><Settings2 size={19} />Duplicate Manager</h3><p>Defaults used when the improved Duplicate Finder opens.</p></div><button className="dm-primary" disabled={saving} onClick={save}>{saving ? <Loader2 className="dm-spin" size={16} /> : <Save size={16} />}Save</button></div>
-    <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label><label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label><DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
+    <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="duration">Exact duration</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>{settings.matchType === "fingerprint" && <label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label>}{settings.matchType === "phash" && <><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label></>}<DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
     <section><h4>Ranking mode</h4><p>Balanced explains codec-aware quality decisions; custom uses your ordered rules.</p><select value={settings.rankingMode} onChange={(event) => update({ rankingMode: event.target.value })}><option value="balanced">Balanced quality (recommended)</option><option value="custom">Custom rule order</option></select></section>
     <section><h4>Preferred codecs</h4><p>Used by custom ranking, best to worst.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>
     <section><h4>Default folder scope</h4><p>Search all folders, only selected folders, or everything except selected folders.</p><FolderScopeControl settings={settings} onChange={update} onPick={() => setFolderOpen(true)} settingsView /></section>

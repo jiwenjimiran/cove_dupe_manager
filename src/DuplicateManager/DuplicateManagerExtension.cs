@@ -142,7 +142,7 @@ public sealed class DuplicateManagerSettings
     {
         var isNewInstall = value is null;
         var settings = value ?? new DuplicateManagerSettings();
-        settings.MatchType = settings.MatchType?.Trim().ToLowerInvariant() is "phash" or "title" or "remoteid"
+        settings.MatchType = settings.MatchType?.Trim().ToLowerInvariant() is "phash" or "title" or "remoteid" or "duration"
             ? settings.MatchType.Trim().ToLowerInvariant()
             : "fingerprint";
         settings.FingerprintAlgorithm = settings.FingerprintAlgorithm?.Trim().ToLowerInvariant() is "md5" or "oshash"

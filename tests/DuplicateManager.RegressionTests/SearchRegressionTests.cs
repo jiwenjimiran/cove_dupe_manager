@@ -71,6 +71,29 @@ internal static class SearchRegressionTests
             "Visual search above 25,000 matching pairs failed.");
         Console.WriteLine("Dense visual search with 61,075 matching pairs passed.");
 
+        Check(DuplicateSearchJobService.NormalizeMatchType("exact-duration") == "duration", "Exact duration match type was not normalized.");
+        db.VideoFiles.AddRange(new[]
+        {
+            (351, 42.0), (352, 42.0), (353, 42.5), (354, 0.0),
+            (355, 42.0), (355, 45.0), (356, 45.0),
+        }.Select((item, index) => new VideoFile
+        {
+            Id = 351 + index, VideoId = item.Item1, ParentFolderId = 1,
+            Basename = $"duration-{index}.mp4", Duration = item.Item2,
+        }));
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var durationSearch = new DuplicateSearch { MatchType = "duration", Distance = 64, DurationDifference = 1000 };
+        db.DuplicateSearches.Add(durationSearch); await db.SaveChangesAsync();
+        await execution.ExecuteAsync(durationSearch.Id, Enumerable.Range(351, 6).ToArray(), new SilentProgress(), CancellationToken.None);
+        var durationGroups = await db.DuplicateSearchGroups.AsNoTracking()
+            .Where(group => group.SearchId == durationSearch.Id)
+            .Select(group => group.Items.Select(item => item.VideoId).OrderBy(id => id).ToArray())
+            .ToArrayAsync();
+        Check(durationGroups.Length == 2 && durationGroups.Any(group => group.SequenceEqual([351, 352]))
+            && durationGroups.Any(group => group.SequenceEqual([355, 356])),
+            "Exact duration matched different, zero, or secondary-file durations.");
+        Console.WriteLine("Exact duration groups and multi-file isolation passed.");
+
         var chunks = DuplicateSearchExecutionService.SplitOversizedGroups([Enumerable.Range(1, 1001)]);
         Check(chunks.All(chunk => chunk.Length <= 50 && chunk.Contains(1)), "Large groups did not share a protected keeper.");
         var visual = DuplicateSearchExecutionService.FindPhashGroupsForTests([

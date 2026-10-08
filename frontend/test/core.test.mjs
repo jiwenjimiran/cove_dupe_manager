@@ -10,6 +10,7 @@ import {
   displayPath,
   duplicateSearchFromUrl,
   duplicateSearchToUrl,
+  exactMatchDuration,
   filterGroups,
   groupRisk,
   keeperReason,
@@ -83,6 +84,16 @@ test("normalizes settings and supports custom page sizes", () => {
 test("normalizes all Cove duplicate match types", () => {
   assert.equal(normalizeSettings({ matchType: "title" }).matchType, "title");
   assert.equal(normalizeSettings({ matchType: "remoteid" }).matchType, "remoteid");
+  assert.equal(normalizeSettings({ matchType: "duration" }).matchType, "duration");
+  assert.equal(duplicateSearchFromUrl(duplicateSearchToUrl("", { matchType: "duration" })).settings.matchType, "duration");
+});
+
+test("exact duration uses the longest file for minimum length filtering", () => {
+  const a = video(1, { duration: 30 });
+  a.files.push({ duration: 60, width: 1, height: 1, size: 1 });
+  const b = video(2, { duration: 60 });
+  assert.equal(exactMatchDuration(a), 60);
+  assert.deepEqual(prepareGroups([[a, b]], { matchType: "duration", minimumDuration: 60 }), [[a, b]]);
 });
 
 test("duplicate search controls round-trip through URL parameters", () => {
