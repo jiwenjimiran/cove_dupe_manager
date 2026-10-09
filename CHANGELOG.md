@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.5 - 2026-10-09
+
+- Match scanned photos without metadata titles by their filename stems in Same title mode.
+- Add a dedicated Same filename mode for photos, ignoring file extensions and metadata titles.
+- Include matching files that Cove attached to the same photo record, with file-level keeper selection.
+- Use the video-style cleanup dialog for photos, including source-file, generated-file, and metadata choices.
+
 ## 2.1.4 - 2026-10-09
 
 - Add Select all recommended, individual group selection, and a bulk cleanup bar to Photo mode.

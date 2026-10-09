@@ -22,7 +22,11 @@ public sealed record VideoDeletionJobRequest(
 public sealed record ImageDeletionJobRequest(
     int TargetImageId,
     List<int> SourceImageIds,
-    List<int> FileIds);
+    List<int> FileIds,
+    bool DeleteFiles = true,
+    bool DeleteGenerated = true,
+    bool CopyMetadata = true,
+    bool OverwriteConflictingMetadata = false);
 public sealed record ImageBatchDeletionJobRequest(List<ImageDeletionJobRequest> Groups);
 
 public sealed record DuplicateDeletionFailure(int SourceId, string Stage, string Message);
@@ -608,23 +612,27 @@ public sealed class DuplicateDeletionJobService(
         state.SetStage("metadata");
         if (sourceIds.Count > 0)
         {
-            var previousTargetTagIds = await db.Set<ImageTag>()
-                .Where(row => row.ImageId == request.TargetImageId)
-                .Select(row => row.TagId)
-                .ToArrayAsync(ct);
-            await MergeImageMetadataAsync(db, request.TargetImageId, sourceIds, ct);
+            var previousTargetTagIds = request.CopyMetadata && tagProvenanceService is not null
+                ? await db.Set<ImageTag>().Where(row => row.ImageId == request.TargetImageId)
+                    .Select(row => row.TagId).ToArrayAsync(ct)
+                : [];
+            await MergeImageMetadataAsync(db, request.TargetImageId, sourceIds, ct,
+                request.CopyMetadata, request.OverwriteConflictingMetadata);
             if (tagProvenanceService is not null)
             {
-                var currentTargetTagIds = await db.Set<ImageTag>()
-                    .Where(row => row.ImageId == request.TargetImageId)
-                    .Select(row => row.TagId)
-                    .ToArrayAsync(ct);
-                await tagProvenanceService.SyncTagSetAsync(
-                    AffinityHostType.Image,
-                    request.TargetImageId,
-                    previousTargetTagIds,
-                    currentTargetTagIds,
-                    cancellationToken: ct);
+                if (request.CopyMetadata)
+                {
+                    var currentTargetTagIds = await db.Set<ImageTag>()
+                        .Where(row => row.ImageId == request.TargetImageId)
+                        .Select(row => row.TagId)
+                        .ToArrayAsync(ct);
+                    await tagProvenanceService.SyncTagSetAsync(
+                        AffinityHostType.Image,
+                        request.TargetImageId,
+                        previousTargetTagIds,
+                        currentTargetTagIds,
+                        cancellationToken: ct);
+                }
                 foreach (var sourceId in sourceIds)
                     await tagProvenanceService.RemoveForHostAsync(AffinityHostType.Image, sourceId, ct);
             }
@@ -632,8 +640,9 @@ public sealed class DuplicateDeletionJobService(
         }
 
         state.SetStage("deletion");
-        foreach (var sourceId in sourceIds)
-            await InvokeThumbnailServiceAsync(services, "DeleteImageGeneratedFilesAsync", sourceId, ct);
+        if (request.DeleteGenerated)
+            foreach (var sourceId in sourceIds)
+                await InvokeThumbnailServiceAsync(services, "DeleteImageGeneratedFilesAsync", sourceId, ct);
 
         if (sourceIds.Count > 0)
         {
@@ -654,84 +663,88 @@ public sealed class DuplicateDeletionJobService(
             await db.SaveChangesAsync(ct);
         }
 
-        if (request.FileIds.Count > 0)
+        if (request.DeleteFiles && request.FileIds.Count > 0)
             await PruneImageFilesAsync(db, request.TargetImageId, request.FileIds, ct);
     }
 
-    internal static async Task MergeImageMetadataAsync(CoveContext db, int targetId, IReadOnlyCollection<int> sourceIds, CancellationToken ct)
+    internal static async Task MergeImageMetadataAsync(CoveContext db, int targetId, IReadOnlyCollection<int> sourceIds,
+        CancellationToken ct, bool copyMetadata = true, bool overwriteConflictingMetadata = false)
     {
-        var target = await db.Images.SingleAsync(image => image.Id == targetId, ct);
-        var sources = await db.Images.Where(image => sourceIds.Contains(image.Id)).OrderBy(image => image.Id).ToListAsync(ct);
-        foreach (var source in sources)
+        if (copyMetadata)
         {
-            target.Title = First(target.Title, source.Title);
-            target.Code = First(target.Code, source.Code);
-            target.Details = First(target.Details, source.Details);
-            target.Photographer = First(target.Photographer, source.Photographer);
-            target.StudioId ??= source.StudioId;
-            if (target.Date is null && source.Date is not null)
+            var target = await db.Images.SingleAsync(image => image.Id == targetId, ct);
+            var sources = await db.Images.Where(image => sourceIds.Contains(image.Id)).OrderBy(image => image.Id).ToListAsync(ct);
+            foreach (var source in sources)
             {
-                target.Date = source.Date;
-                target.DatePrecision = source.DatePrecision;
+                target.Title = Pick(target.Title, source.Title, overwriteConflictingMetadata);
+                target.Code = Pick(target.Code, source.Code, overwriteConflictingMetadata);
+                target.Details = Pick(target.Details, source.Details, overwriteConflictingMetadata);
+                target.Photographer = Pick(target.Photographer, source.Photographer, overwriteConflictingMetadata);
+                target.StudioId = Pick(target.StudioId, source.StudioId, overwriteConflictingMetadata);
+                if (source.Date is not null && (target.Date is null || overwriteConflictingMetadata))
+                {
+                    target.Date = source.Date;
+                    target.DatePrecision = source.DatePrecision;
+                }
+                target.Organized |= source.Organized;
             }
-            target.Organized |= source.Organized;
-        }
 
-        var existingFields = (await db.CustomFieldValues
-            .Where(value => value.EntityType == CustomFieldEntityTypes.Image && value.EntityId == targetId)
-            .Select(value => value.DefinitionId).ToListAsync(ct)).ToHashSet();
-        foreach (var value in await db.CustomFieldValues
-            .Where(value => value.EntityType == CustomFieldEntityTypes.Image && sourceIds.Contains(value.EntityId))
-            .OrderBy(value => value.EntityId).ThenBy(value => value.Position).ToListAsync(ct))
-        {
-            if (existingFields.Add(value.DefinitionId)) value.EntityId = targetId;
-        }
-        foreach (var segment in await db.Segments
-            .Where(segment => segment.HostType == SegmentHostType.Image && sourceIds.Contains(segment.HostId)).ToListAsync(ct))
-            segment.HostId = targetId;
-        foreach (var detection in await db.Detections
-            .Where(detection => detection.HostType == DetectionHostType.Image && sourceIds.Contains(detection.HostId)).ToListAsync(ct))
-            detection.HostId = targetId;
-        var targetGroupIds = (await db.GroupItems
-            .Where(item => item.ImageId == targetId || item.HostType == "image" && item.HostId == targetId)
-            .Select(item => item.GroupId).ToListAsync(ct)).ToHashSet();
-        foreach (var item in await db.GroupItems
-            .Where(item => item.ImageId != null && sourceIds.Contains(item.ImageId.Value)
-                || item.HostType == "image" && sourceIds.Contains(item.HostId)).ToListAsync(ct))
-        {
-            if (!targetGroupIds.Add(item.GroupId)) { db.GroupItems.Remove(item); continue; }
-            if (item.ImageId.HasValue) item.ImageId = targetId;
-            if (item.HostType == "image") item.HostId = targetId;
-        }
+            var existingFields = (await db.CustomFieldValues
+                .Where(value => value.EntityType == CustomFieldEntityTypes.Image && value.EntityId == targetId)
+                .Select(value => value.DefinitionId).ToListAsync(ct)).ToHashSet();
+            foreach (var value in await db.CustomFieldValues
+                .Where(value => value.EntityType == CustomFieldEntityTypes.Image && sourceIds.Contains(value.EntityId))
+                .OrderBy(value => value.EntityId).ThenBy(value => value.Position).ToListAsync(ct))
+            {
+                if (existingFields.Add(value.DefinitionId)) value.EntityId = targetId;
+            }
+            foreach (var segment in await db.Segments
+                .Where(segment => segment.HostType == SegmentHostType.Image && sourceIds.Contains(segment.HostId)).ToListAsync(ct))
+                segment.HostId = targetId;
+            foreach (var detection in await db.Detections
+                .Where(detection => detection.HostType == DetectionHostType.Image && sourceIds.Contains(detection.HostId)).ToListAsync(ct))
+                detection.HostId = targetId;
+            var targetGroupIds = (await db.GroupItems
+                .Where(item => item.ImageId == targetId || item.HostType == "image" && item.HostId == targetId)
+                .Select(item => item.GroupId).ToListAsync(ct)).ToHashSet();
+            foreach (var item in await db.GroupItems
+                .Where(item => item.ImageId != null && sourceIds.Contains(item.ImageId.Value)
+                    || item.HostType == "image" && sourceIds.Contains(item.HostId)).ToListAsync(ct))
+            {
+                if (!targetGroupIds.Add(item.GroupId)) { db.GroupItems.Remove(item); continue; }
+                if (item.ImageId.HasValue) item.ImageId = targetId;
+                if (item.HostType == "image") item.HostId = targetId;
+            }
 
-        var haveTags = (await db.Set<ImageTag>().Where(row => row.ImageId == targetId).Select(row => row.TagId).ToListAsync(ct)).ToHashSet();
-        foreach (var row in await db.Set<ImageTag>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
-        {
-            if (haveTags.Add(row.TagId))
-                db.Set<ImageTag>().Add(new ImageTag { ImageId = targetId, TagId = row.TagId });
-            db.Remove(row);
-        }
-        var havePerformers = (await db.Set<ImagePerformer>().Where(row => row.ImageId == targetId).Select(row => row.PerformerId).ToListAsync(ct)).ToHashSet();
-        foreach (var row in await db.Set<ImagePerformer>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
-        {
-            if (havePerformers.Add(row.PerformerId))
-                db.Set<ImagePerformer>().Add(new ImagePerformer { ImageId = targetId, PerformerId = row.PerformerId });
-            db.Remove(row);
-        }
-        var haveGalleries = (await db.Set<ImageGallery>().Where(row => row.ImageId == targetId).Select(row => row.GalleryId).ToListAsync(ct)).ToHashSet();
-        foreach (var row in await db.Set<ImageGallery>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
-        {
-            if (haveGalleries.Add(row.GalleryId))
-                db.Set<ImageGallery>().Add(new ImageGallery { ImageId = targetId, GalleryId = row.GalleryId });
-            db.Remove(row);
-        }
-        var haveUrls = (await db.Images.Where(image => image.Id == targetId).SelectMany(image => image.Urls).Select(row => row.Url).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in await db.Images.Where(image => sourceIds.Contains(image.Id)).SelectMany(image => image.Urls).ToListAsync(ct))
-        {
-            if (haveUrls.Add(row.Url))
-                row.ImageId = targetId;
-            else
+            var haveTags = (await db.Set<ImageTag>().Where(row => row.ImageId == targetId).Select(row => row.TagId).ToListAsync(ct)).ToHashSet();
+            foreach (var row in await db.Set<ImageTag>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
+            {
+                if (haveTags.Add(row.TagId))
+                    db.Set<ImageTag>().Add(new ImageTag { ImageId = targetId, TagId = row.TagId });
                 db.Remove(row);
+            }
+            var havePerformers = (await db.Set<ImagePerformer>().Where(row => row.ImageId == targetId).Select(row => row.PerformerId).ToListAsync(ct)).ToHashSet();
+            foreach (var row in await db.Set<ImagePerformer>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
+            {
+                if (havePerformers.Add(row.PerformerId))
+                    db.Set<ImagePerformer>().Add(new ImagePerformer { ImageId = targetId, PerformerId = row.PerformerId });
+                db.Remove(row);
+            }
+            var haveGalleries = (await db.Set<ImageGallery>().Where(row => row.ImageId == targetId).Select(row => row.GalleryId).ToListAsync(ct)).ToHashSet();
+            foreach (var row in await db.Set<ImageGallery>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
+            {
+                if (haveGalleries.Add(row.GalleryId))
+                    db.Set<ImageGallery>().Add(new ImageGallery { ImageId = targetId, GalleryId = row.GalleryId });
+                db.Remove(row);
+            }
+            var haveUrls = (await db.Images.Where(image => image.Id == targetId).SelectMany(image => image.Urls).Select(row => row.Url).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var row in await db.Images.Where(image => sourceIds.Contains(image.Id)).SelectMany(image => image.Urls).ToListAsync(ct))
+            {
+                if (haveUrls.Add(row.Url))
+                    row.ImageId = targetId;
+                else
+                    db.Remove(row);
+            }
         }
         foreach (var file in await db.ImageFiles.Where(file => file.ImageId != null && sourceIds.Contains(file.ImageId.Value)).ToListAsync(ct))
             file.ImageId = targetId;

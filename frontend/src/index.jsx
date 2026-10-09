@@ -12,7 +12,7 @@ import {
   parsePageSizeInput, phashComparison, photoCleanupPlan, photoGroupKey, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
-import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageBatchDeletionJob, runImageDeletionJob } from "./deletionJob.js";
+import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageBatchDeletionJob } from "./deletionJob.js";
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -723,6 +723,22 @@ function DeleteDialog({ summary, defaults, onCancel, onConfirm }) {
   </Modal>;
 }
 
+function PhotoDeleteDialog({ summary, onCancel, onConfirm }) {
+  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [deleteGenerated, setDeleteGenerated] = useState(true);
+  const [copyMetadata, setCopyMetadata] = useState(true);
+  const [overwriteMetadata, setOverwriteMetadata] = useState(false);
+  return <Modal title="Delete selected duplicate photos" onClose={onCancel}>
+    <p className="dm-dialog-message">Resolve {summary.groups} duplicate photo groups, merging {summary.photos} duplicate photo records into their keepers. {summary.files} matched files can be removed from disk. At least one photo file will remain in each group.</p>
+    <label className="dm-checkbox-row"><input type="checkbox" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} /><span><strong>Delete matched source files from disk (this will permanently remove the files)</strong><small>If unchecked, those files stay attached to the keeper and may still appear as duplicates. This cannot be undone when checked.</small></span></label>
+    <label className="dm-checkbox-row"><input type="checkbox" checked={deleteGenerated} onChange={(event) => setDeleteGenerated(event.target.checked)} /><span><strong>Delete generated files</strong><small>Remove generated thumbnails and other files for deleted photo records.</small></span></label>
+    <label className="dm-checkbox-row"><input type="checkbox" checked={copyMetadata} onChange={(event) => setCopyMetadata(event.target.checked)} /><span><strong>Copy missing metadata from deleted photos</strong><small>Merge titles, editable metadata, relationships, and markers into each keeper.</small></span></label>
+    <label className="dm-checkbox-row"><input type="checkbox" checked={overwriteMetadata} disabled={!copyMetadata} onChange={(event) => setOverwriteMetadata(event.target.checked)} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer text, date, and studio values from deleted photos when both have a value.</small></span></label>
+    {summary.fileOnlyGroups > 0 && !deleteFiles && <p className="dm-dialog-message">{summary.fileOnlyGroups} group{summary.fileOnlyGroups === 1 ? "" : "s"} contain matching files already attached to the same photo record. Select file deletion to resolve those groups.</p>}
+    <div className="dm-dialog-actions"><button className="dm-secondary" onClick={onCancel}>Cancel</button><button className="dm-danger" disabled={summary.fileOnlyGroups > 0 && !deleteFiles} onClick={() => onConfirm({ deleteFiles, deleteGenerated, copyMetadata, overwriteConflictingMetadata: copyMetadata && overwriteMetadata })}><Trash2 size={16} />Clean {summary.groups} groups</button></div>
+  </Modal>;
+}
+
 function FolderScopeControl({ settings, onChange, onPick, settingsView = false }) {
   const setMode = (folderMode) => onChange(folderMode === "all" ? { folderMode, includedPaths: [] } : { folderMode });
   return <div className={`dm-folder-scope ${settingsView ? "dm-folder-scope-settings" : ""}`}>
@@ -821,6 +837,7 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [progress, setProgress] = useState(null);
+  const [confirmation, setConfirmation] = useState(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const autoStarted = useRef(false);
 
@@ -856,33 +873,42 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
   const pages = Math.max(1, Math.ceil(groups.length / settings.pageSize));
   const visible = groups.slice((Math.min(page, pages) - 1) * settings.pageSize, Math.min(page, pages) * settings.pageSize);
   const selectedGroups = (result?.groups || []).filter((group) => selectedKeys.has(photoGroupKey(group)));
-  const selectedPlans = selectedGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperId)).filter(Boolean);
+  const selectedPlans = selectedGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperFileId)).filter(Boolean);
   const selectedPhotos = selectedPlans.reduce((total, plan) => total + plan.sourceImageIds.length, 0);
   const selectedFiles = selectedPlans.reduce((total, plan) => total + plan.fileIds.length, 0);
 
   function selectRecommended() {
-    const recommended = Object.fromEntries(groups.map((group) => [photoGroupKey(group), group.recommendedKeeperId]));
+    const recommended = Object.fromEntries(groups.filter((group) => photoCleanupPlan(group, group.recommendedKeeperFileId))
+      .map((group) => [photoGroupKey(group), group.recommendedKeeperFileId]));
     setKeepers((current) => ({ ...current, ...recommended }));
     setSelectedKeys((current) => new Set([...current, ...Object.keys(recommended)]));
   }
 
-  async function cleanGroups(targetGroups) {
-    const plans = targetGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperId)).filter(Boolean);
+  function cleanGroups(targetGroups) {
+    const plans = targetGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperFileId)).filter(Boolean);
     if (!plans.length) return;
     const sourceCount = plans.reduce((total, plan) => total + plan.sourceImageIds.length, 0);
     const fileCount = plans.reduce((total, plan) => total + plan.fileIds.length, 0);
-    if (!window.confirm(`Clean ${plans.length} selected photo group(s)?\n\nKeep one photo per group, merge metadata from ${sourceCount} duplicate photo(s), and permanently delete ${fileCount} matched file(s). Archive files and other keeper files are retained.\n\nReview the photos first. This cannot be undone.`)) return;
+    setConfirmation({ plans, targetGroups, summary: { groups: plans.length, photos: sourceCount, files: fileCount,
+      fileOnlyGroups: plans.filter((plan) => plan.sourceImageIds.length === 0).length } });
+  }
+
+  async function confirmDelete(options) {
+    const { plans, targetGroups } = confirmation;
+    setConfirmation(null);
     setBusy(true);
     setError("");
     setNotice("");
     setProgress({ current: 1, total: plans.length, completed: 0, failed: 0 });
     try {
-      const cleanup = await runImageBatchDeletionJob({ groups: plans, onProgress: setProgress });
+      const cleanup = await runImageBatchDeletionJob({ groups: plans.map((plan) => ({ ...plan, ...options })), onProgress: setProgress });
       const cleaned = cleanup.completedIds?.length || 0;
-      if (cleaned) setNotice(`Cleaned ${cleaned} photo group${cleaned === 1 ? "" : "s"}.`);
+      if (cleaned) setNotice(options.deleteFiles
+        ? `Cleaned ${cleaned} photo group${cleaned === 1 ? "" : "s"}.`
+        : `Merged ${cleaned} photo group${cleaned === 1 ? "" : "s"}. Matched files remain attached to their keepers.`);
       if (cleanup.status !== "complete") setError(cleanup.failed?.map((failure) => `Photo #${failure.sourceId}: ${failure.message}`).join("; ") || cleanup.error || "Some photo groups could not be cleaned.");
       const completedIds = new Set(cleanup.completedIds || []);
-      setResult((current) => current && { ...current, groups: current.groups.filter((group) => !completedIds.has(group.recommendedKeeperId) && !group.images.some((image) => completedIds.has(image.id))) });
+      setResult((current) => current && { ...current, groups: current.groups.filter((group) => !group.images.some((image) => completedIds.has(image.id))) });
       try {
         const found = await findPhotoDuplicates(settings);
         setResult(found);
@@ -905,7 +931,7 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
   return <div className="dm-page">
     <header className="dm-header"><div><div className="dm-title"><Copy size={23} /><h1>Duplicate Manager</h1></div><p>Find and review duplicate photos. Metadata is copied to the keeper during cleanup.</p></div></header>
     <section className="dm-controls">
-      <label><span>Match type</span><select value={settings.matchType} onChange={(event) => updateSettings({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title</option></select></label>
+      <label><span>Match type</span><select value={settings.matchType} onChange={(event) => updateSettings({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title (or filename if untitled)</option><option value="filename">Same filename</option></select></label>
       <label><span>Find duplicates in</span><select value={settings.mediaType} onChange={(event) => updateSettings({ mediaType: event.target.value })}><option value="videos">Videos</option><option value="photos">Photos</option></select></label>
       {settings.matchType === "fingerprint" && <label><span>Algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => updateSettings({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5 only</option><option value="oshash">OSHash only</option></select></label>}
       {settings.matchType === "phash" && <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => updateSettings({ phashDistance: Number(event.target.value) })} /></label>}
@@ -920,12 +946,13 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
       {groups.length === 0 && <div className="dm-empty"><Check size={44} /><h2>No duplicate photo groups</h2><p>Change the filters or run a different match.</p></div>}
       <div className="dm-groups">{visible.map((group) => {
         const key = photoGroupKey(group);
-        const keeperId = keepers[key] || group.recommendedKeeperId;
-        const dropCount = photoCleanupPlan(group, keeperId)?.fileIds.length || 0;
+        const keeperFileId = keepers[key] || group.recommendedKeeperFileId;
+        const plan = photoCleanupPlan(group, keeperFileId);
+        const dropCount = plan?.fileIds.length || 0;
         return <section className="dm-group" key={key}>
-          <header><div><label className="dm-checkbox-row"><input type="checkbox" checked={selectedKeys.has(key)} disabled={busy} onChange={(event) => { const checked = event.target.checked; setSelectedKeys((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; }); }} /><strong>Select this group</strong></label><span>{group.images.length} matching photos · Recommended keeper: highest resolution, then smallest file</span></div><button className="dm-secondary" disabled={busy} onClick={() => cleanGroups([group])}>Clean this group ({dropCount} file{dropCount === 1 ? "" : "s"})</button></header>
-          <div className="dm-video-grid">{group.images.map((image) => <article className={`dm-video-card ${keeperId === image.id ? "dm-selected" : ""}`} key={image.id}>
-            <div className="dm-media"><button className={`dm-check ${keeperId === image.id ? "dm-check-on" : ""}`} aria-label={`Keep photo ${image.id}`} disabled={busy} onClick={() => { setKeepers((current) => ({ ...current, [key]: image.id })); setSelectedKeys((current) => new Set(current).add(key)); }}>{keeperId === image.id && <Check size={14} />}</button>{keeperId === image.id && <span className="dm-keeper">Keeper</span>}<img src={`/api/stream/image/${image.id}/thumbnail?max=600`} alt={image.title || `Photo ${image.id}`} loading="lazy" /></div>
+          <header><div><label className="dm-checkbox-row"><input type="checkbox" checked={selectedKeys.has(key)} disabled={busy || !plan} onChange={(event) => { const checked = event.target.checked; setSelectedKeys((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; }); }} /><strong>Select this group</strong></label><span>{group.images.length} matching photo files · Recommended keeper: highest resolution, then smallest file</span></div><button className="dm-secondary" disabled={busy || !plan} onClick={() => cleanGroups([group])}>Clean this group ({dropCount} file{dropCount === 1 ? "" : "s"})</button></header>
+          <div className="dm-video-grid">{group.images.map((image) => <article className={`dm-video-card ${keeperFileId === image.file.id ? "dm-selected" : ""}`} key={image.file.id}>
+            <div className="dm-media"><button className={`dm-check ${keeperFileId === image.file.id ? "dm-check-on" : ""}`} aria-label={`Keep photo file ${image.file.id}`} disabled={busy} onClick={() => { setKeepers((current) => ({ ...current, [key]: image.file.id })); setSelectedKeys((current) => new Set(current).add(key)); }}>{keeperFileId === image.file.id && <Check size={14} />}</button>{keeperFileId === image.file.id && <span className="dm-keeper">Keeper</span>}<img src={`/api/stream/image/${image.id}/thumbnail?max=600`} alt={image.title || `Photo ${image.id}`} loading="lazy" /></div>
             <div className="dm-video-info"><a className="dm-video-title" href={`/image/${image.id}`}>{image.title || image.file.path.split(/[\\/]/).pop() || `Photo #${image.id}`}</a><div className="dm-facts"><span>{image.file.width}×{image.file.height}</span><span>{formatBytes(image.file.size)}</span><span>{image.fileCount} file{image.fileCount === 1 ? "" : "s"}</span>{image.file.inArchive && <span>Archive file</span>}</div><p className="dm-file-path" title={image.file.path}>{displayPath(image.file.path)}</p></div>
           </article>)}</div>
         </section>;
@@ -933,6 +960,7 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
       {groups.length > 0 && <Pagination page={Math.min(page, pages)} totalPages={pages} onChange={setPage} />}
     </>}
     {selectedPlans.length > 0 && <div className="dm-delete-bar"><div><strong>{selectedPlans.length} photo group{selectedPlans.length === 1 ? "" : "s"} selected</strong><span>{selectedPhotos} duplicate photos, {selectedFiles} matched files</span></div><button className="dm-danger" disabled={busy} onClick={() => cleanGroups(selectedGroups)}><Trash2 size={17} />Clean selected groups</button></div>}
+    {confirmation && <PhotoDeleteDialog summary={confirmation.summary} onCancel={() => setConfirmation(null)} onConfirm={confirmDelete} />}
     {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(includedPaths) => { updateSettings({ includedPaths }); setFolderOpen(false); }} />}
   </div>;
 }
@@ -943,6 +971,8 @@ export function DuplicateImagesPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [keepers, setKeepers] = useState({});
+  const [confirmation, setConfirmation] = useState(null);
+  const [notice, setNotice] = useState("");
   async function load(next = page) {
     setBusy(true); setError("");
     try { const value = await findDuplicateImages({ page: next, pageSize: 25 }); setResult(value); setPage(next); }
@@ -950,29 +980,36 @@ export function DuplicateImagesPage() {
     finally { setBusy(false); }
   }
   useEffect(() => { load(1); }, []);
-  async function clean(group) {
+  function clean(group) {
     const keeperId = keepers[group.hash] || group.keeperFileId;
     const keeper = group.files.find((file) => file.id === keeperId) || group.files[0];
     const drop = group.files.filter((file) => file.id !== keeper.id && !file.inArchive);
-    if (!drop.length || !window.confirm(`Permanently delete ${drop.length} visually matching image file(s)?\n\nThis cannot be undone. The group matched pHash distance 0 and still requires your review.`)) return;
-    setBusy(true); setError("");
+    const sources = [...new Set(group.imageIds.filter((id) => Number.isInteger(id) && id > 0 && id !== keeper.imageId))];
+    if (!drop.length && !sources.length) return;
+    setConfirmation({ targetImageId: keeper.imageId, sourceImageIds: sources, fileIds: drop.map((file) => file.id),
+      summary: { groups: 1, photos: sources.length, files: drop.length, fileOnlyGroups: sources.length ? 0 : 1 } });
+  }
+  async function confirmDelete(options) {
+    const plan = confirmation;
+    setConfirmation(null);
+    setBusy(true); setError(""); setNotice("");
     try {
-      const sources = [...new Set(group.imageIds.filter((id) => id !== keeper.imageId))];
-      const cleanup = await runImageDeletionJob({
-        targetImageId: keeper.imageId,
-        sourceImageIds: sources,
-        fileIds: drop.map((file) => file.id),
-      });
+      const cleanup = await runImageBatchDeletionJob({ groups: [{ targetImageId: plan.targetImageId,
+        sourceImageIds: plan.sourceImageIds, fileIds: plan.fileIds, ...options }] });
       if (cleanup.status !== "complete") throw new Error(cleanup.failed?.[0]?.message || cleanup.error || "Duplicate image cleanup job failed.");
+      setNotice(options.deleteFiles ? "Matched photo files were cleaned." : "Photo records were merged. Matched files remain attached to the keeper.");
       await load(page);
-    } catch (reason) { setError(reason.message); setBusy(false); }
+    } catch (reason) { setError(reason.message); }
+    finally { setBusy(false); }
   }
   const pages = Math.max(1, Math.ceil((result?.total || 0) / 25));
-  return <div className="dm-page"><header className="dm-header"><div><div className="dm-title"><Copy size={23} /><h1>Duplicate Images</h1></div><p>Review-only exact pHash groups. Cleanup is permanent after confirmation; archive entries are protected.</p></div><button className="dm-primary" disabled={busy} onClick={() => load(page)}>{busy ? "Working…" : "Refresh"}</button></header>
+  return <div className="dm-page"><header className="dm-header"><div><div className="dm-title"><Copy size={23} /><h1>Duplicate Images</h1></div><p>Review exact pHash groups and choose whether to delete matched files. Archive entries are protected.</p></div><button className="dm-primary" disabled={busy} onClick={() => load(page)}>{busy ? "Working…" : "Refresh"}</button></header>
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} />{error}</div>}
+    {notice && <div className="dm-alert"><Check size={17} />{notice}</div>}
     <div className="dm-summary"><span><strong>{result?.total || 0}</strong> groups</span><span>Page {page} of {pages}</span></div>
     <div className="dm-groups">{(result?.groups || []).map((group) => <section className="dm-group" key={group.hash}><header><div><strong>{group.files.length} copies</strong><span>{formatBytes(group.freeableBytes)} recoverable</span></div><button className="dm-danger" disabled={busy} onClick={() => clean(group)}>Clean reviewed group</button></header><div className="dm-video-grid">{group.files.map((file) => <article className={`dm-video-card ${(keepers[group.hash] || group.keeperFileId) === file.id ? "dm-selected" : ""}`} key={file.id}><div className="dm-media"><button className="dm-check" disabled={file.inArchive} onClick={() => setKeepers((value) => ({ ...value, [group.hash]: file.id }))}><Check size={14} /></button><img src={`/api/stream/image/${file.imageId}/thumbnail?max=400`} alt="" loading="lazy" /></div><div className="dm-video-info"><strong>{file.width}×{file.height}</strong><div className="dm-facts"><span>{formatBytes(file.size)}</span>{file.inArchive && <span>archive—protected</span>}</div><p className="dm-file-path" title={file.path}>{displayPath(file.path)}</p></div></article>)}</div></section>)}</div>
     <nav className="dm-pagination"><button disabled={page <= 1 || busy} onClick={() => load(page - 1)}><ArrowLeft size={17} /></button><span>Page {page} of {pages}</span><button disabled={page >= pages || busy} onClick={() => load(page + 1)}><ArrowRight size={17} /></button></nav>
+    {confirmation && <PhotoDeleteDialog summary={confirmation.summary} onCancel={() => setConfirmation(null)} onConfirm={confirmDelete} />}
   </div>;
 }
 
@@ -995,7 +1032,7 @@ export function DuplicateManagerSettingsPanel() {
   return <div className="dm-settings">
     <div className="dm-settings-heading"><div><h3><Settings2 size={19} />Duplicate Manager</h3><p>Defaults used when the improved Duplicate Finder opens.</p></div><button className="dm-primary" disabled={saving} onClick={save}>{saving ? <Loader2 className="dm-spin" size={16} /> : <Save size={16} />}Save</button></div>
     <div className="dm-settings-grid">
-      <label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option>{settings.mediaType === "videos" && <option value="duration">Exact duration</option>}<option value="title">Same title</option>{settings.mediaType === "videos" && <option value="remoteid">Same remote ID</option>}</select></label>
+      <label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option>{settings.mediaType === "videos" && <option value="duration">Exact duration</option>}<option value="title">{settings.mediaType === "photos" ? "Same title (or filename if untitled)" : "Same title"}</option>{settings.mediaType === "photos" && <option value="filename">Same filename</option>}{settings.mediaType === "videos" && <option value="remoteid">Same remote ID</option>}</select></label>
       <label><span>Find duplicates in</span><select value={settings.mediaType} onChange={(event) => update({ mediaType: event.target.value })}><option value="videos">Videos</option><option value="photos">Photos</option></select></label>
       {settings.matchType === "fingerprint" && <label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label>}
       {settings.matchType === "phash" && <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label>}

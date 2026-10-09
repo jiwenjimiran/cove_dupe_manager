@@ -52,7 +52,7 @@ export function normalizeSettings(value) {
     : incoming.keeperRules;
   const mediaType = incoming.mediaType === "photos" ? "photos" : "videos";
   const allowedMatches = mediaType === "photos"
-    ? ["fingerprint", "phash", "title"]
+    ? ["fingerprint", "phash", "title", "filename"]
     : ["fingerprint", "phash", "title", "remoteid", "duration"];
   return {
     ...DEFAULT_SETTINGS,
@@ -122,17 +122,18 @@ export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "
 }
 
 export function photoGroupKey(group) {
-  return group.images.map((image) => image.id).sort((left, right) => left - right).join(":");
+  return group.images.map((image) => image.file.id).sort((left, right) => left - right).join(":");
 }
 
-export function photoCleanupPlan(group, keeperId = group.recommendedKeeperId) {
-  const keeper = group.images.find((image) => image.id === keeperId);
+export function photoCleanupPlan(group, keeperFileId = group.recommendedKeeperFileId) {
+  const keeper = group.images.find((image) => image.file.id === keeperFileId);
   if (!keeper || group.images.length < 2) return null;
-  return {
+  const plan = {
     targetImageId: keeper.id,
-    sourceImageIds: group.images.filter((image) => image.id !== keeper.id).map((image) => image.id),
-    fileIds: group.matchedFiles.filter((file) => file.imageId !== keeper.id && !file.inArchive).map((file) => file.id),
+    sourceImageIds: [...new Set(group.images.filter((image) => image.id !== keeper.id).map((image) => image.id))],
+    fileIds: group.matchedFiles.filter((file) => file.id !== keeperFileId && !file.inArchive).map((file) => file.id),
   };
+  return plan.sourceImageIds.length || plan.fileIds.length ? plan : null;
 }
 
 export function comparisonPlayback(video) {

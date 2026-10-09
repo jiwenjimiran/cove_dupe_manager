@@ -15,7 +15,7 @@ public sealed record PhotoDuplicateSearchRequest(
 
 public sealed record PhotoDuplicateFile(int Id, int ImageId, string Path, int Width, int Height, long Size, bool InArchive);
 public sealed record PhotoDuplicateItem(int Id, string? Title, PhotoDuplicateFile File, int FileCount);
-public sealed record PhotoDuplicateGroup(int RecommendedKeeperId, IReadOnlyList<PhotoDuplicateItem> Images, IReadOnlyList<PhotoDuplicateFile> MatchedFiles);
+public sealed record PhotoDuplicateGroup(int RecommendedKeeperId, int RecommendedKeeperFileId, IReadOnlyList<PhotoDuplicateItem> Images, IReadOnlyList<PhotoDuplicateFile> MatchedFiles);
 public sealed record PhotoDuplicateSearchResult(IReadOnlyList<PhotoDuplicateGroup> Groups);
 
 internal static class PhotoDuplicateSearch
@@ -27,8 +27,8 @@ internal static class PhotoDuplicateSearch
         CoveContext db, PhotoDuplicateSearchRequest request, CancellationToken ct)
     {
         var matchType = request.MatchType?.Trim().ToLowerInvariant();
-        if (matchType is not ("fingerprint" or "phash" or "title"))
-            throw new ArgumentException("Photo matching supports exact fingerprint, visual pHash, and same title.");
+        if (matchType is not ("fingerprint" or "phash" or "title" or "filename"))
+            throw new ArgumentException("Photo matching supports exact fingerprint, visual pHash, same title, and same filename.");
 
         var includes = Search.DuplicateSearchJobService.NormalizeScopePaths(request.IncludePaths);
         var excludes = Search.DuplicateSearchJobService.NormalizeScopePaths(request.ExcludePaths);
@@ -37,7 +37,7 @@ internal static class PhotoDuplicateSearch
             && !excludes.Any(folder => Search.DuplicateSearchJobService.IsAtOrBelow(path, folder));
 
         var parent = new Dictionary<int, int>();
-        var matchedFiles = new Dictionary<int, HashSet<int>>();
+        var fileOwners = new Dictionary<int, int>();
         void Connect(int left, int right)
         {
             parent.TryAdd(left, left);
@@ -58,31 +58,30 @@ internal static class PhotoDuplicateSearch
         void MatchBucket(IEnumerable<Candidate> candidates)
         {
             var rows = candidates.ToArray();
-            var ids = rows.Select(row => row.ImageId).Distinct().ToArray();
+            var ids = rows.Select(row => row.FileId).Distinct().ToArray();
             if (ids.Length < 2) return;
             for (var index = 1; index < ids.Length; index++) Connect(ids[0], ids[index]);
             foreach (var row in rows)
-            {
-                if (!matchedFiles.TryGetValue(row.ImageId, out var files))
-                    matchedFiles[row.ImageId] = files = [];
-                files.Add(row.FileId);
-            }
+                fileOwners[row.FileId] = row.ImageId;
         }
         void MatchHashBuckets(HashBucket left, HashBucket right)
         {
-            if (left.Candidates.Select(row => row.ImageId).Concat(right.Candidates.Select(row => row.ImageId)).Distinct().Skip(1).Any())
+            if (left.Candidates.Select(row => row.FileId).Concat(right.Candidates.Select(row => row.FileId)).Distinct().Skip(1).Any())
                 MatchBucket(left.Candidates.Concat(right.Candidates));
         }
 
-        if (matchType == "title")
+        if (matchType is "title" or "filename")
         {
             var rows = await db.ImageFiles.AsNoTracking().Where(file => file.ImageId.HasValue)
-                .Join(db.Images.AsNoTracking().Where(image => image.Title != null && image.Title != ""),
+                .Join(db.Images.AsNoTracking(),
                     file => file.ImageId!.Value, image => image.Id,
-                    (file, image) => new { FileId = file.Id, ImageId = image.Id, file.Path, image.Title })
+                    (file, image) => new { FileId = file.Id, ImageId = image.Id, file.Path, file.Basename, image.Title })
                 .ToListAsync(ct);
             foreach (var bucket in rows.Where(row => InScope(row.Path))
-                .GroupBy(row => Search.DuplicateSearchExecutionService.NormalizeTitle(row.Title!), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(row => Search.DuplicateSearchExecutionService.NormalizeTitle(
+                    matchType == "filename" || string.IsNullOrWhiteSpace(row.Title)
+                        ? Path.GetFileNameWithoutExtension(row.Basename)
+                        : row.Title), StringComparer.OrdinalIgnoreCase)
                 .Where(bucket => bucket.Key.Length > 0))
                 MatchBucket(bucket.Select(row => new Candidate(row.FileId, row.ImageId, bucket.Key)));
         }
@@ -150,36 +149,42 @@ internal static class PhotoDuplicateSearch
             }
         }
 
+        foreach (var imageFiles in fileOwners.GroupBy(pair => pair.Value))
+        {
+            var ids = imageFiles.Select(pair => pair.Key).ToArray();
+            for (var index = 1; index < ids.Length; index++) Connect(ids[0], ids[index]);
+        }
         var components = parent.Keys.GroupBy(Root).Select(group => group.Order().ToArray())
             .Where(group => group.Length > 1).ToArray();
-        var imageIds = components.SelectMany(group => group).Distinct().ToArray();
-        var images = new Dictionary<int, Image>();
+        var matchedFileIds = components.SelectMany(group => group).Distinct().ToArray();
+        var files = new Dictionary<int, ImageFile>();
+        foreach (var chunk in matchedFileIds.Chunk(4000))
+            foreach (var file in await db.ImageFiles.AsNoTracking().Where(file => chunk.Contains(file.Id))
+                .Include(file => file.Image).ToListAsync(ct))
+                if (file.Image is not null && file.ImageId.HasValue) files[file.Id] = file;
+        var imageIds = files.Values.Where(file => file.ImageId.HasValue).Select(file => file.ImageId!.Value).Distinct().ToArray();
+        var fileCounts = new Dictionary<int, int>();
         foreach (var chunk in imageIds.Chunk(4000))
-            foreach (var image in await db.Images.AsNoTracking().Where(image => chunk.Contains(image.Id))
-                .Include(image => image.Files).ToListAsync(ct))
-                images[image.Id] = image;
+            foreach (var count in await db.ImageFiles.AsNoTracking().Where(file => file.ImageId.HasValue && chunk.Contains(file.ImageId.Value))
+                .GroupBy(file => file.ImageId!.Value).Select(group => new { ImageId = group.Key, Count = group.Count() }).ToListAsync(ct))
+                fileCounts[count.ImageId] = count.Count;
 
         var groups = new List<PhotoDuplicateGroup>(components.Length);
         foreach (var component in components)
         {
-            var items = component.Where(images.ContainsKey).Select(id =>
+            var items = component.Where(files.ContainsKey).Select(id =>
             {
-                var image = images[id];
-                var file = image.Files.Where(file => matchedFiles[id].Contains(file.Id))
-                    .OrderByDescending(file => (long)file.Width * file.Height)
-                    .ThenBy(file => file.Size).ThenBy(file => file.Id).First();
-                return new PhotoDuplicateItem(id, image.Title,
-                    new PhotoDuplicateFile(file.Id, id, file.Path, file.Width, file.Height, file.Size,
-                        file.ZipFileId.HasValue || DuplicateManagerExtension.IsArchivePath(file.Path)), image.Files.Count);
+                var file = files[id];
+                var imageId = file.ImageId!.Value;
+                return new PhotoDuplicateItem(imageId, file.Image?.Title,
+                    new PhotoDuplicateFile(file.Id, imageId, file.Path, file.Width, file.Height, file.Size,
+                        file.ZipFileId.HasValue || DuplicateManagerExtension.IsArchivePath(file.Path)), fileCounts[imageId]);
             }).OrderByDescending(item => (long)item.File.Width * item.File.Height)
-              .ThenBy(item => item.File.Size).ThenBy(item => item.Id).ToArray();
+              .ThenBy(item => item.File.Size).ThenBy(item => item.File.Id).ToArray();
             if (items.Length < 2) continue;
-            var matched = component.SelectMany(id => images[id].Files.Where(file => matchedFiles[id].Contains(file.Id)))
-                .OrderBy(file => file.Id)
-                .Select(file => new PhotoDuplicateFile(file.Id, file.ImageId!.Value, file.Path, file.Width, file.Height, file.Size,
-                    file.ZipFileId.HasValue || DuplicateManagerExtension.IsArchivePath(file.Path))).ToArray();
-            groups.Add(new PhotoDuplicateGroup(items[0].Id, items, matched));
+            var matched = items.Select(item => item.File).OrderBy(file => file.Id).ToArray();
+            groups.Add(new PhotoDuplicateGroup(items[0].Id, items[0].File.Id, items, matched));
         }
-        return new PhotoDuplicateSearchResult(groups.OrderBy(group => group.Images[0].Id).ToArray());
+        return new PhotoDuplicateSearchResult(groups.OrderBy(group => group.Images[0].File.Id).ToArray());
     }
 }

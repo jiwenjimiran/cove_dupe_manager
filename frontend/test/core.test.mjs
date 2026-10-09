@@ -98,6 +98,8 @@ test("photo searches keep their media type in URLs and restrict match types to p
   assert.equal(normalizeSettings({}).mediaType, "videos");
   assert.equal(normalizeSettings({ mediaType: "photos", matchType: "duration" }).matchType, "fingerprint");
   assert.equal(normalizeSettings({ mediaType: "photos", matchType: "remoteid" }).matchType, "fingerprint");
+  assert.equal(normalizeSettings({ mediaType: "photos", matchType: "filename" }).matchType, "filename");
+  assert.equal(normalizeSettings({ mediaType: "videos", matchType: "filename" }).matchType, "fingerprint");
   const settings = normalizeSettings({ mediaType: "photos", matchType: "phash", phashDistance: 5 });
   const restored = duplicateSearchFromUrl(duplicateSearchToUrl("", settings));
   assert.equal(restored.hasSearchParams, true);
@@ -109,7 +111,9 @@ test("photo searches keep their media type in URLs and restrict match types to p
 test("photo cleanup plans keep the selected image and archive files safe", () => {
   const group = {
     recommendedKeeperId: 2,
-    images: [{ id: 1 }, { id: 2 }, { id: 3 }],
+    recommendedKeeperFileId: 20,
+    images: [{ id: 1, file: { id: 10 } }, { id: 2, file: { id: 20 } },
+      { id: 2, file: { id: 21 } }, { id: 3, file: { id: 30 } }],
     matchedFiles: [
       { id: 10, imageId: 1, inArchive: false },
       { id: 20, imageId: 2, inArchive: false },
@@ -117,10 +121,15 @@ test("photo cleanup plans keep the selected image and archive files safe", () =>
       { id: 30, imageId: 3, inArchive: true },
     ],
   };
-  assert.equal(photoGroupKey(group), "1:2:3");
-  assert.deepEqual(photoCleanupPlan(group), { targetImageId: 2, sourceImageIds: [1, 3], fileIds: [10] });
-  assert.deepEqual(photoCleanupPlan(group, 1), { targetImageId: 1, sourceImageIds: [2, 3], fileIds: [20, 21] });
+  assert.equal(photoGroupKey(group), "10:20:21:30");
+  assert.deepEqual(photoCleanupPlan(group), { targetImageId: 2, sourceImageIds: [1, 3], fileIds: [10, 21] });
+  assert.deepEqual(photoCleanupPlan(group, 10), { targetImageId: 1, sourceImageIds: [2, 3], fileIds: [20, 21] });
   assert.equal(photoCleanupPlan(group, 99), null);
+  const sameImage = { recommendedKeeperFileId: 40,
+    images: [{ id: 4, file: { id: 40 } }, { id: 4, file: { id: 41 } }],
+    matchedFiles: [{ id: 40, imageId: 4, inArchive: false }, { id: 41, imageId: 4, inArchive: false }] };
+  assert.deepEqual(photoCleanupPlan(sameImage), { targetImageId: 4, sourceImageIds: [], fileIds: [41] });
+  assert.equal(photoCleanupPlan({ ...sameImage, matchedFiles: sameImage.matchedFiles.map((file) => ({ ...file, inArchive: true })) }), null);
 });
 
 test("duration results keep the server's folder and delta groups separate", () => {

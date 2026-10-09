@@ -3,6 +3,7 @@ using Cove.Core.Interfaces;
 using Cove.Data;
 using Cove.DuplicateManager;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 internal static class PhotoRegressionTests
 {
@@ -16,11 +17,20 @@ internal static class PhotoRegressionTests
             new Folder { Id = 1, Path = "/photos" },
             new Folder { Id = 2, Path = "/photos/other", ParentFolderId = 1 },
             new Folder { Id = 3, Path = "/photos/archive.zip", ParentFolderId = 1 });
+        var untitledJpg = Image(5, null, 1, 1200, 1200, 2500, "1111111111111111", "unique-5");
+        var untitledPng = Image(6, null, 1, 1200, 1200, 3500, "2222222222222222", "unique-6");
+        var titledJpg = Image(7, "First title", 1, 1200, 1200, 2500, "4444444444444444", "unique-7");
+        var titledPng = Image(8, "Second title", 1, 1200, 1200, 3500, "8888888888888888", "unique-8");
+        untitledJpg.Files.Single().Basename = "holiday.jpg";
+        untitledPng.Files.Single().Basename = "holiday.png";
+        titledJpg.Files.Single().Basename = "another.jpg";
+        titledPng.Files.Single().Basename = "another.png";
         db.Images.AddRange(
             Image(1, "Shared", 1, 1000, 1000, 1000, "0000000000000000", "same"),
             Image(2, "Shared", 2, 2000, 2000, 5000, "0000000000000001", "different"),
             Image(3, "Shared", 1, 2000, 2000, 3000, "0000000000000002", "same"),
-            Image(4, "Other", 3, 500, 500, 600, "0000000000000000", "unique"));
+            Image(4, "Other", 3, 500, 500, 600, "0000000000000000", "unique"),
+            untitledJpg, untitledPng, titledJpg, titledPng);
         await db.SaveChangesAsync();
 
         var exact = await PhotoDuplicateSearch.FindAsync(db,
@@ -43,11 +53,38 @@ internal static class PhotoRegressionTests
             "Matched photo files must identify their owning image for safe cleanup.");
         var title = await PhotoDuplicateSearch.FindAsync(db,
             new PhotoDuplicateSearchRequest("title"), CancellationToken.None);
-        Check(title.Groups.Count == 1 && Ids(title.Groups[0]).SequenceEqual([1, 2, 3]),
-            "Photo title search did not group matching titles.");
+        Check(title.Groups.Count == 2 && title.Groups.Any(group => Ids(group).SequenceEqual([1, 2, 3]))
+            && title.Groups.Any(group => Ids(group).SequenceEqual([5, 6])),
+            "Photo title search did not use filenames for ordinary untitled scanned images.");
+        var filename = await PhotoDuplicateSearch.FindAsync(db,
+            new PhotoDuplicateSearchRequest("filename"), CancellationToken.None);
+        Check(filename.Groups.Count == 2 && filename.Groups.Any(group => Ids(group).SequenceEqual([5, 6]))
+            && filename.Groups.Any(group => Ids(group).SequenceEqual([7, 8])),
+            "Photo filename search did not match file stems independently of metadata titles.");
         var scoped = await PhotoDuplicateSearch.FindAsync(db,
             new PhotoDuplicateSearchRequest("phash", PhashDistance: 1, IncludePaths: ["/photos/other"]), CancellationToken.None);
         Check(scoped.Groups.Count == 0, "Photo folder scope included other folders.");
+
+        var sameRecord = Image(9, null, 1, 1200, 1200, 5000, "aaaaaaaaaaaaaaaa", "same-record");
+        sameRecord.Files.Single().Basename = "single-record.jpg";
+        sameRecord.Files.Add(new ImageFile
+        {
+            Id = 10, ParentFolderId = 1, Basename = "single-record.png", Width = 1200, Height = 1200, Size = 3000,
+            Fingerprints = [new FileFingerprint { Type = "phash", Value = "aaaaaaaaaaaaaaaa" },
+                new FileFingerprint { Type = "md5", Value = "same-record" }],
+        });
+        db.Images.Add(sameRecord);
+        await db.SaveChangesAsync();
+        var sameRecordMatches = await PhotoDuplicateSearch.FindAsync(db,
+            new PhotoDuplicateSearchRequest("filename"), CancellationToken.None);
+        var fileGroup = sameRecordMatches.Groups.Single(group => group.Images.All(image => image.Id == 9));
+        Check(fileGroup.Images.Select(image => image.File.Id).Order().SequenceEqual([9, 10])
+            && fileGroup.RecommendedKeeperFileId == 10,
+            "Files attached to one photo record were hidden or ranked incorrectly.");
+        var sameRecordExact = await PhotoDuplicateSearch.FindAsync(db,
+            new PhotoDuplicateSearchRequest("fingerprint", "md5"), CancellationToken.None);
+        Check(sameRecordExact.Groups.Any(group => group.Images.Select(image => image.File.Id).Order().SequenceEqual([9, 10])),
+            "Exact duplicate files within one photo record were hidden.");
 
         var donor = await db.Images.SingleAsync(image => image.Id == 1);
         donor.Details = "Donor details";
@@ -59,12 +96,31 @@ internal static class PhotoRegressionTests
             && keeper.Photographer == "Donor photographer", "Photo scalar metadata was not copied to the keeper.");
         Check(await db.ImageFiles.CountAsync(file => file.ImageId == 3) == 2,
             "Photo files were not attached to the keeper before pruning.");
+        await DuplicateDeletionJobService.MergeImageMetadataAsync(db, 7, [8], CancellationToken.None, copyMetadata: false);
+        Check((await db.Images.AsNoTracking().SingleAsync(image => image.Id == 7)).Title == "First title"
+            && await db.ImageFiles.CountAsync(file => file.ImageId == 7) == 2,
+            "Records-only photo cleanup must retain the keeper's metadata and attach source files.");
+        var overwriteDonor = await db.Images.SingleAsync(image => image.Id == 2);
+        overwriteDonor.Details = "Preferred source details";
+        await db.SaveChangesAsync();
+        await DuplicateDeletionJobService.MergeImageMetadataAsync(db, 3, [2], CancellationToken.None,
+            overwriteConflictingMetadata: true);
+        Check((await db.Images.AsNoTracking().SingleAsync(image => image.Id == 3)).Details == "Preferred source details",
+            "Photo metadata overwrite did not prefer a source value.");
+        var legacyRequest = JsonSerializer.Deserialize<ImageDeletionJobRequest>(
+            """{"targetImageId":3,"sourceImageIds":[2],"fileIds":[22]}""",
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Check(legacyRequest is { DeleteFiles: true, DeleteGenerated: true, CopyMetadata: true },
+            "Existing single-group photo cleanup requests lost their original defaults.");
         var service = new DuplicateDeletionJobService(null!, new StubJobs(), null!);
         var batch = service.StartImageBatchJob(new ImageBatchDeletionJobRequest([
             new ImageDeletionJobRequest(10, [11], [101]),
             new ImageDeletionJobRequest(20, [21], [201]),
         ]));
         Check(batch.Total == 2 && batch.MediaType == "image", "Bulk photo cleanup did not queue one job for both groups.");
+        Check(service.StartImageBatchJob(new ImageBatchDeletionJobRequest([
+            new ImageDeletionJobRequest(9, [], [9]),
+        ])).Total == 1, "Photo file duplicates within one record could not be queued for cleanup.");
         try
         {
             service.StartImageBatchJob(new ImageBatchDeletionJobRequest([
@@ -74,10 +130,10 @@ internal static class PhotoRegressionTests
             throw new InvalidOperationException("Overlapping photo groups were accepted for bulk cleanup.");
         }
         catch (ArgumentException) { }
-        Console.WriteLine("Photo fingerprint, pHash, title, folder scope, ranking and metadata checks passed.");
+        Console.WriteLine("Photo fingerprint, pHash, title/filename, folder scope, ranking and metadata checks passed.");
     }
 
-    private static Image Image(int id, string title, int folderId, int width, int height, long size, string phash, string md5)
+    private static Image Image(int id, string? title, int folderId, int width, int height, long size, string phash, string md5)
         => new()
         {
             Id = id, Title = title,

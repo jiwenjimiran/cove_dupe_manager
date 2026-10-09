@@ -23,7 +23,7 @@ public sealed partial class DuplicateManagerExtension : IExtension, IUIExtension
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "2.1.4";
+    public string Version => "2.1.5";
     public string? Description => "Safe, explainable duplicate review and cleanup for Cove videos and images.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";
@@ -146,10 +146,12 @@ public sealed class DuplicateManagerSettings
         var isNewInstall = value is null;
         var settings = value ?? new DuplicateManagerSettings();
         settings.MediaType = settings.MediaType?.Trim().ToLowerInvariant() == "photos" ? "photos" : "videos";
-        settings.MatchType = settings.MatchType?.Trim().ToLowerInvariant() is "phash" or "title" or "remoteid" or "duration"
+        settings.MatchType = settings.MatchType?.Trim().ToLowerInvariant() is "phash" or "title" or "filename" or "remoteid" or "duration"
             ? settings.MatchType.Trim().ToLowerInvariant()
             : "fingerprint";
         if (settings.MediaType == "photos" && (settings.MatchType is "remoteid" or "duration"))
+            settings.MatchType = "fingerprint";
+        if (settings.MediaType == "videos" && settings.MatchType == "filename")
             settings.MatchType = "fingerprint";
         settings.FingerprintAlgorithm = settings.FingerprintAlgorithm?.Trim().ToLowerInvariant() is "md5" or "oshash"
             ? settings.FingerprintAlgorithm.Trim().ToLowerInvariant()

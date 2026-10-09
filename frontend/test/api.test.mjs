@@ -362,6 +362,23 @@ test("bulk photo cleanup submits all selected groups in one request", async () =
   assert.deepEqual(requestBody, { groups });
 });
 
+test("bulk photo cleanup passes the confirmation choices to Cove", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (_path, options = {}) => {
+    requestBody = JSON.parse(options.body);
+    return { ok: true, status: 202, text: async () => JSON.stringify({ operationId: "bulk-photo-operation" }) };
+  };
+  try {
+    await startImageBatchDeletionJob([{
+      targetImageId: 10, sourceImageIds: [11], fileIds: [101],
+      deleteFiles: false, deleteGenerated: true, copyMetadata: true, overwriteConflictingMetadata: false,
+    }]);
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(requestBody.groups[0].deleteFiles, false);
+  assert.equal(requestBody.groups[0].copyMetadata, true);
+});
+
 test("metadata copy updates the keeper before recreating ratings and markers", async () => {
   const writes = [];
   const responses = new Map([
