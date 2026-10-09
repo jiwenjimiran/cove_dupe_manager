@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.4 - 2026-10-09
+
+- Add Select all recommended, individual group selection, and a bulk cleanup bar to Photo mode.
+- Process selected photo groups in one server job with progress and per-group failure reporting.
+
 ## 2.1.3 - 2026-10-09
 
 - Add a Videos/Photos selector to Duplicate Finder, with Videos as the default.

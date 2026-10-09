@@ -262,6 +262,12 @@ export function startImageDeletionJob(targetImageId, sourceImageIds, fileIds) {
   });
 }
 
+export function startImageBatchDeletionJob(groups) {
+  return request("/api/ext/duplicate-manager/images/batch-deletion-jobs", {
+    method: "POST", body: JSON.stringify({ groups }),
+  });
+}
+
 export function getImageDeletionJob(operationId) {
   return request(`/api/ext/duplicate-manager/images/deletion-jobs/${encodeURIComponent(operationId)}`);
 }

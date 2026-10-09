@@ -5,6 +5,7 @@ import {
   deletionJobProgress,
   removeVideoIdsFromGroups,
   runDeletionJob,
+  runImageBatchDeletionJob,
   runImageDeletionJob,
   waitForDeletionJob,
 } from "../src/deletionJob.js";
@@ -83,6 +84,27 @@ test("image cleanup is also handed to a Cove job", async () => {
   });
   assert.deepEqual(calls, [[10, [11, 12], [101, 102]]]);
   assert.equal(result.status, "complete");
+});
+
+test("bulk photo cleanup tracks one Cove job and preserves per-group failures", async () => {
+  const groups = [{ targetImageId: 10, sourceImageIds: [11], fileIds: [101] },
+    { targetImageId: 20, sourceImageIds: [21], fileIds: [201] }];
+  const progress = [];
+  const result = await runImageBatchDeletionJob({
+    groups,
+    startJob: async (submitted) => {
+      assert.deepEqual(submitted, groups);
+      return { operationId: "bulk-photo", status: "running", total: 2, processed: 0 };
+    },
+    loadJob: async () => ({ operationId: "bulk-photo", status: "partial", total: 2, processed: 2,
+      completedIds: [10], failed: [{ sourceId: 20, stage: "deletion", message: "locked file" }] }),
+    wait: async () => {},
+    onProgress: (value) => progress.push(value),
+  });
+  assert.equal(progress.at(-1).completed, 1);
+  assert.equal(progress.at(-1).failed, 1);
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.completedIds, [10]);
 });
 
 test("server job progress is normalized for the existing UI", () => {

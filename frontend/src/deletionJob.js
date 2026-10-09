@@ -1,6 +1,7 @@
 import {
   getImageDeletionJob,
   getVideoDeletionJob,
+  startImageBatchDeletionJob,
   startImageDeletionJob,
   startVideoDeletionJob,
 } from "./api.js";
@@ -49,6 +50,18 @@ export async function runImageDeletionJob({
   pollInterval = 750,
 } = {}) {
   const started = await startJob(targetImageId, sourceImageIds, fileIds);
+  return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
+}
+
+export async function runImageBatchDeletionJob({
+  groups,
+  onProgress = () => {},
+  startJob = startImageBatchDeletionJob,
+  loadJob = getImageDeletionJob,
+  wait = delay,
+  pollInterval = 750,
+} = {}) {
+  const started = await startJob(groups || []);
   return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
 }
 

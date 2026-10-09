@@ -18,6 +18,8 @@ import {
   normalizeSettings,
   parsePageSizeInput,
   parseDurationInput,
+  photoCleanupPlan,
+  photoGroupKey,
   phashComparison,
   prepareGroups,
   selectedSummary,
@@ -102,6 +104,23 @@ test("photo searches keep their media type in URLs and restrict match types to p
   assert.equal(normalizeSettings(restored.settings).mediaType, "photos");
   assert.equal(normalizeSettings(restored.settings).matchType, "phash");
   assert.equal(normalizeSettings(restored.settings).phashDistance, 5);
+});
+
+test("photo cleanup plans keep the selected image and archive files safe", () => {
+  const group = {
+    recommendedKeeperId: 2,
+    images: [{ id: 1 }, { id: 2 }, { id: 3 }],
+    matchedFiles: [
+      { id: 10, imageId: 1, inArchive: false },
+      { id: 20, imageId: 2, inArchive: false },
+      { id: 21, imageId: 2, inArchive: false },
+      { id: 30, imageId: 3, inArchive: true },
+    ],
+  };
+  assert.equal(photoGroupKey(group), "1:2:3");
+  assert.deepEqual(photoCleanupPlan(group), { targetImageId: 2, sourceImageIds: [1, 3], fileIds: [10] });
+  assert.deepEqual(photoCleanupPlan(group, 1), { targetImageId: 1, sourceImageIds: [2, 3], fileIds: [20, 21] });
+  assert.equal(photoCleanupPlan(group, 99), null);
 });
 
 test("duration results keep the server's folder and delta groups separate", () => {

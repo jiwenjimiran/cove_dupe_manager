@@ -9,10 +9,10 @@ import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
   displayPath, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
-  parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
+  parsePageSizeInput, phashComparison, photoCleanupPlan, photoGroupKey, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
-import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageDeletionJob } from "./deletionJob.js";
+import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageBatchDeletionJob, runImageDeletionJob } from "./deletionJob.js";
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -816,18 +816,23 @@ function Modal({ title, onClose, wide, children }) {
 function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, query, setQuery, page, setPage }) {
   const [result, setResult] = useState(null);
   const [keepers, setKeepers] = useState({});
+  const [selectedKeys, setSelectedKeys] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [progress, setProgress] = useState(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const autoStarted = useRef(false);
 
   async function search() {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const found = await findPhotoDuplicates(settings);
       setResult(found);
       setKeepers({});
+      setSelectedKeys(new Set());
       setPage(1);
     } catch (reason) {
       setError(reason.message || "Photo search failed.");
@@ -850,29 +855,49 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
   });
   const pages = Math.max(1, Math.ceil(groups.length / settings.pageSize));
   const visible = groups.slice((Math.min(page, pages) - 1) * settings.pageSize, Math.min(page, pages) * settings.pageSize);
+  const selectedGroups = (result?.groups || []).filter((group) => selectedKeys.has(photoGroupKey(group)));
+  const selectedPlans = selectedGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperId)).filter(Boolean);
+  const selectedPhotos = selectedPlans.reduce((total, plan) => total + plan.sourceImageIds.length, 0);
+  const selectedFiles = selectedPlans.reduce((total, plan) => total + plan.fileIds.length, 0);
 
-  async function clean(group) {
-    const key = group.images.map((image) => image.id).join(":");
-    const keeperId = keepers[key] || group.recommendedKeeperId;
-    const keeper = group.images.find((image) => image.id === keeperId);
-    const sources = group.images.filter((image) => image.id !== keeperId).map((image) => image.id);
-    const drop = group.matchedFiles.filter((file) => file.imageId !== keeperId && !file.inArchive);
-    if (!sources.length || !window.confirm(
-      `Keep photo #${keeperId}, merge metadata from ${sources.length} duplicate photo(s), and permanently delete ${drop.length} matched file(s)?\n\nReview the photos first. This cannot be undone.`)) return;
+  function selectRecommended() {
+    const recommended = Object.fromEntries(groups.map((group) => [photoGroupKey(group), group.recommendedKeeperId]));
+    setKeepers((current) => ({ ...current, ...recommended }));
+    setSelectedKeys((current) => new Set([...current, ...Object.keys(recommended)]));
+  }
+
+  async function cleanGroups(targetGroups) {
+    const plans = targetGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperId)).filter(Boolean);
+    if (!plans.length) return;
+    const sourceCount = plans.reduce((total, plan) => total + plan.sourceImageIds.length, 0);
+    const fileCount = plans.reduce((total, plan) => total + plan.fileIds.length, 0);
+    if (!window.confirm(`Clean ${plans.length} selected photo group(s)?\n\nKeep one photo per group, merge metadata from ${sourceCount} duplicate photo(s), and permanently delete ${fileCount} matched file(s). Archive files and other keeper files are retained.\n\nReview the photos first. This cannot be undone.`)) return;
     setBusy(true);
     setError("");
+    setNotice("");
+    setProgress({ current: 1, total: plans.length, completed: 0, failed: 0 });
     try {
-      const cleanup = await runImageDeletionJob({
-        targetImageId: keeperId,
-        sourceImageIds: sources,
-        fileIds: drop.map((file) => file.id),
-      });
-      if (cleanup.status !== "complete")
-        throw new Error(cleanup.failed?.[0]?.message || cleanup.error || "Photo cleanup failed.");
-      await search();
+      const cleanup = await runImageBatchDeletionJob({ groups: plans, onProgress: setProgress });
+      const cleaned = cleanup.completedIds?.length || 0;
+      if (cleaned) setNotice(`Cleaned ${cleaned} photo group${cleaned === 1 ? "" : "s"}.`);
+      if (cleanup.status !== "complete") setError(cleanup.failed?.map((failure) => `Photo #${failure.sourceId}: ${failure.message}`).join("; ") || cleanup.error || "Some photo groups could not be cleaned.");
+      const completedIds = new Set(cleanup.completedIds || []);
+      setResult((current) => current && { ...current, groups: current.groups.filter((group) => !completedIds.has(group.recommendedKeeperId) && !group.images.some((image) => completedIds.has(image.id))) });
+      try {
+        const found = await findPhotoDuplicates(settings);
+        setResult(found);
+        setSelectedKeys(new Set());
+        setKeepers({});
+        setPage(1);
+      } catch (reason) {
+        const completedKeys = new Set(targetGroups.filter((group) => group.images.some((image) => completedIds.has(image.id))).map(photoGroupKey));
+        setSelectedKeys((current) => new Set([...current].filter((key) => !completedKeys.has(key))));
+        setError((current) => `${current ? `${current} ` : ""}Results could not refresh: ${reason.message || "Search failed"}.`);
+      }
     } catch (reason) {
-      setError(reason.message || "Photo cleanup failed.");
+      setError(reason.message || "Photo cleanup failed. Run the search again to refresh the groups.");
     } finally {
+      setProgress(null);
       setBusy(false);
     }
   }
@@ -888,23 +913,26 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
       <button className="dm-primary" disabled={busy} onClick={search}>{busy ? <Loader2 className="dm-spin" size={17} /> : <Search size={17} />}{busy ? "Working" : "Find duplicates"}</button>
     </section>
     {error && <div className="dm-alert dm-error"><AlertTriangle size={17} />{error}</div>}
+    {notice && <div className="dm-alert"><Check size={17} />{notice}</div>}
+    {progress && <div className="dm-alert"><Loader2 className="dm-spin" size={17} />Cleaning photo group {progress.current} of {progress.total} ({progress.completed} complete, {progress.failed} failed)</div>}
     {result && <><div className="dm-result-toolbar"><div className="dm-search"><Search size={16} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Filter photo title or path" /></div><PageSizeControl value={settings.pageSize} onChange={(pageSize) => updateSettings({ pageSize })} /></div>
-      <div className="dm-summary"><span><strong>{groups.length}</strong> groups</span><span>Page {Math.min(page, pages)} of {pages}</span></div>
+      <div className="dm-summary"><span><strong>{groups.length}</strong> groups</span><span>Page {Math.min(page, pages)} of {pages}</span><button className="dm-secondary" disabled={busy || groups.length === 0} onClick={selectRecommended}>Select all recommended</button><button className="dm-secondary" disabled={busy || selectedKeys.size === 0} onClick={() => setSelectedKeys(new Set())}>Clear selection</button></div>
       {groups.length === 0 && <div className="dm-empty"><Check size={44} /><h2>No duplicate photo groups</h2><p>Change the filters or run a different match.</p></div>}
       <div className="dm-groups">{visible.map((group) => {
-        const key = group.images.map((image) => image.id).join(":");
+        const key = photoGroupKey(group);
         const keeperId = keepers[key] || group.recommendedKeeperId;
-        const dropCount = group.matchedFiles.filter((file) => file.imageId !== keeperId && !file.inArchive).length;
+        const dropCount = photoCleanupPlan(group, keeperId)?.fileIds.length || 0;
         return <section className="dm-group" key={key}>
-          <header><div><strong>{group.images.length} matching photos</strong><span>Recommended keeper: highest resolution, then smallest file</span></div><button className="dm-danger" disabled={busy} onClick={() => clean(group)}>Merge and delete {dropCount} file{dropCount === 1 ? "" : "s"}</button></header>
+          <header><div><label className="dm-checkbox-row"><input type="checkbox" checked={selectedKeys.has(key)} disabled={busy} onChange={(event) => { const checked = event.target.checked; setSelectedKeys((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; }); }} /><strong>Select this group</strong></label><span>{group.images.length} matching photos · Recommended keeper: highest resolution, then smallest file</span></div><button className="dm-secondary" disabled={busy} onClick={() => cleanGroups([group])}>Clean this group ({dropCount} file{dropCount === 1 ? "" : "s"})</button></header>
           <div className="dm-video-grid">{group.images.map((image) => <article className={`dm-video-card ${keeperId === image.id ? "dm-selected" : ""}`} key={image.id}>
-            <div className="dm-media"><button className={`dm-check ${keeperId === image.id ? "dm-check-on" : ""}`} aria-label={`Keep photo ${image.id}`} onClick={() => setKeepers((current) => ({ ...current, [key]: image.id }))}>{keeperId === image.id && <Check size={14} />}</button>{keeperId === image.id && <span className="dm-keeper">Keeper</span>}<img src={`/api/stream/image/${image.id}/thumbnail?max=600`} alt={image.title || `Photo ${image.id}`} loading="lazy" /></div>
+            <div className="dm-media"><button className={`dm-check ${keeperId === image.id ? "dm-check-on" : ""}`} aria-label={`Keep photo ${image.id}`} disabled={busy} onClick={() => { setKeepers((current) => ({ ...current, [key]: image.id })); setSelectedKeys((current) => new Set(current).add(key)); }}>{keeperId === image.id && <Check size={14} />}</button>{keeperId === image.id && <span className="dm-keeper">Keeper</span>}<img src={`/api/stream/image/${image.id}/thumbnail?max=600`} alt={image.title || `Photo ${image.id}`} loading="lazy" /></div>
             <div className="dm-video-info"><a className="dm-video-title" href={`/image/${image.id}`}>{image.title || image.file.path.split(/[\\/]/).pop() || `Photo #${image.id}`}</a><div className="dm-facts"><span>{image.file.width}×{image.file.height}</span><span>{formatBytes(image.file.size)}</span><span>{image.fileCount} file{image.fileCount === 1 ? "" : "s"}</span>{image.file.inArchive && <span>Archive file</span>}</div><p className="dm-file-path" title={image.file.path}>{displayPath(image.file.path)}</p></div>
           </article>)}</div>
         </section>;
       })}</div>
       {groups.length > 0 && <Pagination page={Math.min(page, pages)} totalPages={pages} onChange={setPage} />}
     </>}
+    {selectedPlans.length > 0 && <div className="dm-delete-bar"><div><strong>{selectedPlans.length} photo group{selectedPlans.length === 1 ? "" : "s"} selected</strong><span>{selectedPhotos} duplicate photos, {selectedFiles} matched files</span></div><button className="dm-danger" disabled={busy} onClick={() => cleanGroups(selectedGroups)}><Trash2 size={17} />Clean selected groups</button></div>}
     {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(includedPaths) => { updateSettings({ includedPaths }); setFolderOpen(false); }} />}
   </div>;
 }

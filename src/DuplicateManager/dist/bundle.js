@@ -143,6 +143,18 @@ function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "") {
   const query = params.toString();
   return query ? `?${query}` : "";
 }
+function photoGroupKey(group) {
+  return group.images.map((image) => image.id).sort((left, right) => left - right).join(":");
+}
+function photoCleanupPlan(group, keeperId = group.recommendedKeeperId) {
+  const keeper = group.images.find((image) => image.id === keeperId);
+  if (!keeper || group.images.length < 2) return null;
+  return {
+    targetImageId: keeper.id,
+    sourceImageIds: group.images.filter((image) => image.id !== keeper.id).map((image) => image.id),
+    fileIds: group.matchedFiles.filter((file) => file.imageId !== keeper.id && !file.inArchive).map((file) => file.id)
+  };
+}
 function comparisonPlayback(video) {
   const file = primaryFile(video);
   const format = normalizeContainer(file?.format, file?.path || file?.basename);
@@ -840,6 +852,12 @@ function startImageDeletionJob(targetImageId, sourceImageIds, fileIds) {
     body: JSON.stringify({ targetImageId, sourceImageIds, fileIds })
   });
 }
+function startImageBatchDeletionJob(groups) {
+  return request("/api/ext/duplicate-manager/images/batch-deletion-jobs", {
+    method: "POST",
+    body: JSON.stringify({ groups })
+  });
+}
 function getImageDeletionJob(operationId) {
   return request(`/api/ext/duplicate-manager/images/deletion-jobs/${encodeURIComponent(operationId)}`);
 }
@@ -1037,6 +1055,18 @@ async function runImageDeletionJob({
   pollInterval = 750
 } = {}) {
   const started = await startJob(targetImageId, sourceImageIds, fileIds);
+  return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
+}
+async function runImageBatchDeletionJob({
+  groups,
+  onProgress = () => {
+  },
+  startJob = startImageBatchDeletionJob,
+  loadJob = getImageDeletionJob,
+  wait = delay,
+  pollInterval = 750
+} = {}) {
+  const started = await startJob(groups || []);
   return waitForDeletionJob(started, { loadJob, onProgress, wait, pollInterval });
 }
 async function waitForDeletionJob(started, {
@@ -1845,17 +1875,22 @@ function Modal({ title, onClose, wide, children }) {
 function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, query, setQuery, page, setPage }) {
   const [result, setResult] = useState(null);
   const [keepers, setKeepers] = useState({});
+  const [selectedKeys, setSelectedKeys] = useState(/* @__PURE__ */ new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [progress, setProgress] = useState(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const autoStarted = useRef(false);
   async function search() {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const found = await findPhotoDuplicates(settings);
       setResult(found);
       setKeepers({});
+      setSelectedKeys(/* @__PURE__ */ new Set());
       setPage(1);
     } catch (reason) {
       setError(reason.message || "Photo search failed.");
@@ -1875,43 +1910,74 @@ function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, quer
   });
   const pages = Math.max(1, Math.ceil(groups.length / settings.pageSize));
   const visible = groups.slice((Math.min(page, pages) - 1) * settings.pageSize, Math.min(page, pages) * settings.pageSize);
-  async function clean(group) {
-    const key = group.images.map((image) => image.id).join(":");
-    const keeperId = keepers[key] || group.recommendedKeeperId;
-    const keeper = group.images.find((image) => image.id === keeperId);
-    const sources = group.images.filter((image) => image.id !== keeperId).map((image) => image.id);
-    const drop = group.matchedFiles.filter((file) => file.imageId !== keeperId && !file.inArchive);
-    if (!sources.length || !window.confirm(
-      `Keep photo #${keeperId}, merge metadata from ${sources.length} duplicate photo(s), and permanently delete ${drop.length} matched file(s)?
+  const selectedGroups = (result?.groups || []).filter((group) => selectedKeys.has(photoGroupKey(group)));
+  const selectedPlans = selectedGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperId)).filter(Boolean);
+  const selectedPhotos = selectedPlans.reduce((total, plan) => total + plan.sourceImageIds.length, 0);
+  const selectedFiles = selectedPlans.reduce((total, plan) => total + plan.fileIds.length, 0);
+  function selectRecommended() {
+    const recommended = Object.fromEntries(groups.map((group) => [photoGroupKey(group), group.recommendedKeeperId]));
+    setKeepers((current) => ({ ...current, ...recommended }));
+    setSelectedKeys((current) => /* @__PURE__ */ new Set([...current, ...Object.keys(recommended)]));
+  }
+  async function cleanGroups(targetGroups) {
+    const plans = targetGroups.map((group) => photoCleanupPlan(group, keepers[photoGroupKey(group)] || group.recommendedKeeperId)).filter(Boolean);
+    if (!plans.length) return;
+    const sourceCount = plans.reduce((total, plan) => total + plan.sourceImageIds.length, 0);
+    const fileCount = plans.reduce((total, plan) => total + plan.fileIds.length, 0);
+    if (!window.confirm(`Clean ${plans.length} selected photo group(s)?
 
-Review the photos first. This cannot be undone.`
-    )) return;
+Keep one photo per group, merge metadata from ${sourceCount} duplicate photo(s), and permanently delete ${fileCount} matched file(s). Archive files and other keeper files are retained.
+
+Review the photos first. This cannot be undone.`)) return;
     setBusy(true);
     setError("");
+    setNotice("");
+    setProgress({ current: 1, total: plans.length, completed: 0, failed: 0 });
     try {
-      const cleanup = await runImageDeletionJob({
-        targetImageId: keeperId,
-        sourceImageIds: sources,
-        fileIds: drop.map((file) => file.id)
-      });
-      if (cleanup.status !== "complete")
-        throw new Error(cleanup.failed?.[0]?.message || cleanup.error || "Photo cleanup failed.");
-      await search();
+      const cleanup = await runImageBatchDeletionJob({ groups: plans, onProgress: setProgress });
+      const cleaned = cleanup.completedIds?.length || 0;
+      if (cleaned) setNotice(`Cleaned ${cleaned} photo group${cleaned === 1 ? "" : "s"}.`);
+      if (cleanup.status !== "complete") setError(cleanup.failed?.map((failure) => `Photo #${failure.sourceId}: ${failure.message}`).join("; ") || cleanup.error || "Some photo groups could not be cleaned.");
+      const completedIds = new Set(cleanup.completedIds || []);
+      setResult((current) => current && { ...current, groups: current.groups.filter((group) => !completedIds.has(group.recommendedKeeperId) && !group.images.some((image) => completedIds.has(image.id))) });
+      try {
+        const found = await findPhotoDuplicates(settings);
+        setResult(found);
+        setSelectedKeys(/* @__PURE__ */ new Set());
+        setKeepers({});
+        setPage(1);
+      } catch (reason) {
+        const completedKeys = new Set(targetGroups.filter((group) => group.images.some((image) => completedIds.has(image.id))).map(photoGroupKey));
+        setSelectedKeys((current) => new Set([...current].filter((key) => !completedKeys.has(key))));
+        setError((current) => `${current ? `${current} ` : ""}Results could not refresh: ${reason.message || "Search failed"}.`);
+      }
     } catch (reason) {
-      setError(reason.message || "Photo cleanup failed.");
+      setError(reason.message || "Photo cleanup failed. Run the search again to refresh the groups.");
     } finally {
+      setProgress(null);
       setBusy(false);
     }
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Manager")), /* @__PURE__ */ React.createElement("p", null, "Find and review duplicate photos. Metadata is copied to the keeper during cleanup."))), /* @__PURE__ */ React.createElement("section", { className: "dm-controls" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => updateSettings({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Find duplicates in"), /* @__PURE__ */ React.createElement("select", { value: settings.mediaType, onChange: (event) => updateSettings({ mediaType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "videos" }, "Videos"), /* @__PURE__ */ React.createElement("option", { value: "photos" }, "Photos"))), settings.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => updateSettings({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5 only"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash only"))), settings.matchType === "phash" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => updateSettings({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: updateSettings, onPick: () => setFolderOpen(true) }), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: busy, onClick: search }, busy ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }) : /* @__PURE__ */ React.createElement(Search, { size: 17 }), busy ? "Working" : "Find duplicates")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), error), result && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "dm-result-toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "dm-search" }, /* @__PURE__ */ React.createElement(Search, { size: 16 }), /* @__PURE__ */ React.createElement("input", { value: query, onChange: (event) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "dm-page" }, /* @__PURE__ */ React.createElement("header", { className: "dm-header" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "dm-title" }, /* @__PURE__ */ React.createElement(Copy, { size: 23 }), /* @__PURE__ */ React.createElement("h1", null, "Duplicate Manager")), /* @__PURE__ */ React.createElement("p", null, "Find and review duplicate photos. Metadata is copied to the keeper during cleanup."))), /* @__PURE__ */ React.createElement("section", { className: "dm-controls" }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Match type"), /* @__PURE__ */ React.createElement("select", { value: settings.matchType, onChange: (event) => updateSettings({ matchType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "fingerprint" }, "Exact fingerprint"), /* @__PURE__ */ React.createElement("option", { value: "phash" }, "Visual pHash"), /* @__PURE__ */ React.createElement("option", { value: "title" }, "Same title"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Find duplicates in"), /* @__PURE__ */ React.createElement("select", { value: settings.mediaType, onChange: (event) => updateSettings({ mediaType: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "videos" }, "Videos"), /* @__PURE__ */ React.createElement("option", { value: "photos" }, "Photos"))), settings.matchType === "fingerprint" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Algorithm"), /* @__PURE__ */ React.createElement("select", { value: settings.fingerprintAlgorithm, onChange: (event) => updateSettings({ fingerprintAlgorithm: event.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "any" }, "MD5 or OSHash"), /* @__PURE__ */ React.createElement("option", { value: "md5" }, "MD5 only"), /* @__PURE__ */ React.createElement("option", { value: "oshash" }, "OSHash only"))), settings.matchType === "phash" && /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", null, "Maximum pHash distance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "64", value: settings.phashDistance, onChange: (event) => updateSettings({ phashDistance: Number(event.target.value) }) })), /* @__PURE__ */ React.createElement(FolderScopeControl, { settings, onChange: updateSettings, onPick: () => setFolderOpen(true) }), /* @__PURE__ */ React.createElement("button", { className: "dm-primary", disabled: busy, onClick: search }, busy ? /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }) : /* @__PURE__ */ React.createElement(Search, { size: 17 }), busy ? "Working" : "Find duplicates")), error && /* @__PURE__ */ React.createElement("div", { className: "dm-alert dm-error" }, /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17 }), error), notice && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, /* @__PURE__ */ React.createElement(Check, { size: 17 }), notice), progress && /* @__PURE__ */ React.createElement("div", { className: "dm-alert" }, /* @__PURE__ */ React.createElement(Loader2, { className: "dm-spin", size: 17 }), "Cleaning photo group ", progress.current, " of ", progress.total, " (", progress.completed, " complete, ", progress.failed, " failed)"), result && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "dm-result-toolbar" }, /* @__PURE__ */ React.createElement("div", { className: "dm-search" }, /* @__PURE__ */ React.createElement(Search, { size: 16 }), /* @__PURE__ */ React.createElement("input", { value: query, onChange: (event) => {
     setQuery(event.target.value);
     setPage(1);
-  }, placeholder: "Filter photo title or path" })), /* @__PURE__ */ React.createElement(PageSizeControl, { value: settings.pageSize, onChange: (pageSize) => updateSettings({ pageSize }) })), /* @__PURE__ */ React.createElement("div", { className: "dm-summary" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, groups.length), " groups"), /* @__PURE__ */ React.createElement("span", null, "Page ", Math.min(page, pages), " of ", pages)), groups.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dm-empty" }, /* @__PURE__ */ React.createElement(Check, { size: 44 }), /* @__PURE__ */ React.createElement("h2", null, "No duplicate photo groups"), /* @__PURE__ */ React.createElement("p", null, "Change the filters or run a different match.")), /* @__PURE__ */ React.createElement("div", { className: "dm-groups" }, visible.map((group) => {
-    const key = group.images.map((image) => image.id).join(":");
+  }, placeholder: "Filter photo title or path" })), /* @__PURE__ */ React.createElement(PageSizeControl, { value: settings.pageSize, onChange: (pageSize) => updateSettings({ pageSize }) })), /* @__PURE__ */ React.createElement("div", { className: "dm-summary" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("strong", null, groups.length), " groups"), /* @__PURE__ */ React.createElement("span", null, "Page ", Math.min(page, pages), " of ", pages), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: busy || groups.length === 0, onClick: selectRecommended }, "Select all recommended"), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: busy || selectedKeys.size === 0, onClick: () => setSelectedKeys(/* @__PURE__ */ new Set()) }, "Clear selection")), groups.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dm-empty" }, /* @__PURE__ */ React.createElement(Check, { size: 44 }), /* @__PURE__ */ React.createElement("h2", null, "No duplicate photo groups"), /* @__PURE__ */ React.createElement("p", null, "Change the filters or run a different match.")), /* @__PURE__ */ React.createElement("div", { className: "dm-groups" }, visible.map((group) => {
+    const key = photoGroupKey(group);
     const keeperId = keepers[key] || group.recommendedKeeperId;
-    const dropCount = group.matchedFiles.filter((file) => file.imageId !== keeperId && !file.inArchive).length;
-    return /* @__PURE__ */ React.createElement("section", { className: "dm-group", key }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("strong", null, group.images.length, " matching photos"), /* @__PURE__ */ React.createElement("span", null, "Recommended keeper: highest resolution, then smallest file")), /* @__PURE__ */ React.createElement("button", { className: "dm-danger", disabled: busy, onClick: () => clean(group) }, "Merge and delete ", dropCount, " file", dropCount === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "dm-video-grid" }, group.images.map((image) => /* @__PURE__ */ React.createElement("article", { className: `dm-video-card ${keeperId === image.id ? "dm-selected" : ""}`, key: image.id }, /* @__PURE__ */ React.createElement("div", { className: "dm-media" }, /* @__PURE__ */ React.createElement("button", { className: `dm-check ${keeperId === image.id ? "dm-check-on" : ""}`, "aria-label": `Keep photo ${image.id}`, onClick: () => setKeepers((current) => ({ ...current, [key]: image.id })) }, keeperId === image.id && /* @__PURE__ */ React.createElement(Check, { size: 14 })), keeperId === image.id && /* @__PURE__ */ React.createElement("span", { className: "dm-keeper" }, "Keeper"), /* @__PURE__ */ React.createElement("img", { src: `/api/stream/image/${image.id}/thumbnail?max=600`, alt: image.title || `Photo ${image.id}`, loading: "lazy" })), /* @__PURE__ */ React.createElement("div", { className: "dm-video-info" }, /* @__PURE__ */ React.createElement("a", { className: "dm-video-title", href: `/image/${image.id}` }, image.title || image.file.path.split(/[\\/]/).pop() || `Photo #${image.id}`), /* @__PURE__ */ React.createElement("div", { className: "dm-facts" }, /* @__PURE__ */ React.createElement("span", null, image.file.width, "\xD7", image.file.height), /* @__PURE__ */ React.createElement("span", null, formatBytes(image.file.size)), /* @__PURE__ */ React.createElement("span", null, image.fileCount, " file", image.fileCount === 1 ? "" : "s"), image.file.inArchive && /* @__PURE__ */ React.createElement("span", null, "Archive file")), /* @__PURE__ */ React.createElement("p", { className: "dm-file-path", title: image.file.path }, displayPath(image.file.path)))))));
-  })), groups.length > 0 && /* @__PURE__ */ React.createElement(Pagination, { page: Math.min(page, pages), totalPages: pages, onChange: setPage })), folderOpen && /* @__PURE__ */ React.createElement(FolderDialog, { mode: settings.folderMode, selected: settings.includedPaths, onCancel: () => setFolderOpen(false), onApply: (includedPaths) => {
+    const dropCount = photoCleanupPlan(group, keeperId)?.fileIds.length || 0;
+    return /* @__PURE__ */ React.createElement("section", { className: "dm-group", key }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "dm-checkbox-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: selectedKeys.has(key), disabled: busy, onChange: (event) => {
+      const checked = event.target.checked;
+      setSelectedKeys((current) => {
+        const next = new Set(current);
+        if (checked) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    } }), /* @__PURE__ */ React.createElement("strong", null, "Select this group")), /* @__PURE__ */ React.createElement("span", null, group.images.length, " matching photos \xB7 Recommended keeper: highest resolution, then smallest file")), /* @__PURE__ */ React.createElement("button", { className: "dm-secondary", disabled: busy, onClick: () => cleanGroups([group]) }, "Clean this group (", dropCount, " file", dropCount === 1 ? "" : "s", ")")), /* @__PURE__ */ React.createElement("div", { className: "dm-video-grid" }, group.images.map((image) => /* @__PURE__ */ React.createElement("article", { className: `dm-video-card ${keeperId === image.id ? "dm-selected" : ""}`, key: image.id }, /* @__PURE__ */ React.createElement("div", { className: "dm-media" }, /* @__PURE__ */ React.createElement("button", { className: `dm-check ${keeperId === image.id ? "dm-check-on" : ""}`, "aria-label": `Keep photo ${image.id}`, disabled: busy, onClick: () => {
+      setKeepers((current) => ({ ...current, [key]: image.id }));
+      setSelectedKeys((current) => new Set(current).add(key));
+    } }, keeperId === image.id && /* @__PURE__ */ React.createElement(Check, { size: 14 })), keeperId === image.id && /* @__PURE__ */ React.createElement("span", { className: "dm-keeper" }, "Keeper"), /* @__PURE__ */ React.createElement("img", { src: `/api/stream/image/${image.id}/thumbnail?max=600`, alt: image.title || `Photo ${image.id}`, loading: "lazy" })), /* @__PURE__ */ React.createElement("div", { className: "dm-video-info" }, /* @__PURE__ */ React.createElement("a", { className: "dm-video-title", href: `/image/${image.id}` }, image.title || image.file.path.split(/[\\/]/).pop() || `Photo #${image.id}`), /* @__PURE__ */ React.createElement("div", { className: "dm-facts" }, /* @__PURE__ */ React.createElement("span", null, image.file.width, "\xD7", image.file.height), /* @__PURE__ */ React.createElement("span", null, formatBytes(image.file.size)), /* @__PURE__ */ React.createElement("span", null, image.fileCount, " file", image.fileCount === 1 ? "" : "s"), image.file.inArchive && /* @__PURE__ */ React.createElement("span", null, "Archive file")), /* @__PURE__ */ React.createElement("p", { className: "dm-file-path", title: image.file.path }, displayPath(image.file.path)))))));
+  })), groups.length > 0 && /* @__PURE__ */ React.createElement(Pagination, { page: Math.min(page, pages), totalPages: pages, onChange: setPage })), selectedPlans.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "dm-delete-bar" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("strong", null, selectedPlans.length, " photo group", selectedPlans.length === 1 ? "" : "s", " selected"), /* @__PURE__ */ React.createElement("span", null, selectedPhotos, " duplicate photos, ", selectedFiles, " matched files")), /* @__PURE__ */ React.createElement("button", { className: "dm-danger", disabled: busy, onClick: () => cleanGroups(selectedGroups) }, /* @__PURE__ */ React.createElement(Trash2, { size: 17 }), "Clean selected groups")), folderOpen && /* @__PURE__ */ React.createElement(FolderDialog, { mode: settings.folderMode, selected: settings.includedPaths, onCancel: () => setFolderOpen(false), onApply: (includedPaths) => {
     updateSettings({ includedPaths });
     setFolderOpen(false);
   } }));

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, deleteVideo, findDuplicates, findPhotoDuplicates,
-  loadTranscodeResolutions, mediaUrls, request, startImageDeletionJob, startVideoDeletionJob,
+  loadTranscodeResolutions, mediaUrls, request, startImageBatchDeletionJob, startImageDeletionJob, startVideoDeletionJob,
 } from "../src/api.js";
 
 function storage(initial = {}) {
@@ -343,6 +343,23 @@ test("reviewed image cleanup queues metadata merge and file pruning together", a
     globalThis.fetch = originalFetch;
   }
   assert.deepEqual(requestBody, { targetImageId: 10, sourceImageIds: [11, 12], fileIds: [101, 102] });
+});
+
+test("bulk photo cleanup submits all selected groups in one request", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (path, options = {}) => {
+    assert.equal(path, "/api/ext/duplicate-manager/images/batch-deletion-jobs");
+    requestBody = JSON.parse(options.body);
+    return { ok: true, status: 202, text: async () => JSON.stringify({ operationId: "bulk-photo-operation" }) };
+  };
+  const groups = [
+    { targetImageId: 10, sourceImageIds: [11], fileIds: [101] },
+    { targetImageId: 20, sourceImageIds: [21, 22], fileIds: [201, 202] },
+  ];
+  try { await startImageBatchDeletionJob(groups); }
+  finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual(requestBody, { groups });
 });
 
 test("metadata copy updates the keeper before recreating ratings and markers", async () => {

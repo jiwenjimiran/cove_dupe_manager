@@ -23,6 +23,7 @@ public sealed record ImageDeletionJobRequest(
     int TargetImageId,
     List<int> SourceImageIds,
     List<int> FileIds);
+public sealed record ImageBatchDeletionJobRequest(List<ImageDeletionJobRequest> Groups);
 
 public sealed record DuplicateDeletionFailure(int SourceId, string Stage, string Message);
 public sealed record DuplicateDeletionWarning(int SourceId, string Message);
@@ -78,24 +79,45 @@ public sealed class DuplicateDeletionJobService(
     public DuplicateDeletionJobSnapshot StartImageJob(ImageDeletionJobRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        return QueueImageJob([NormalizeImageGroup(request)]);
+    }
+
+    public DuplicateDeletionJobSnapshot StartImageBatchJob(ImageBatchDeletionJobRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Groups is null || request.Groups.Count is < 1 or > 10_000)
+            throw new ArgumentException("Select between 1 and 10,000 photo groups.");
+        var groups = request.Groups.Select(NormalizeImageGroup).ToArray();
+        var imageIds = new HashSet<int>();
+        foreach (var group in groups)
+            if (!imageIds.Add(group.TargetImageId) || group.SourceImageIds.Any(id => !imageIds.Add(id)))
+                throw new ArgumentException("A photo can appear in only one selected group.");
+        return QueueImageJob(groups);
+    }
+
+    private static ImageDeletionJobRequest NormalizeImageGroup(ImageDeletionJobRequest request)
+    {
         if (request.TargetImageId <= 0)
             throw new ArgumentException("A valid keeper image is required.");
         var sourceIds = (request.SourceImageIds ?? []).Where(id => id > 0 && id != request.TargetImageId).Distinct().ToList();
         var fileIds = (request.FileIds ?? []).Where(id => id > 0).Distinct().ToList();
         if (sourceIds.Count == 0 && fileIds.Count == 0)
             throw new ArgumentException("At least one duplicate image or image file is required.");
+        return request with { SourceImageIds = sourceIds, FileIds = fileIds };
+    }
 
-        var normalized = request with { SourceImageIds = sourceIds, FileIds = fileIds };
+    private DuplicateDeletionJobSnapshot QueueImageJob(IReadOnlyList<ImageDeletionJobRequest> groups)
+    {
         var operationId = Guid.NewGuid().ToString("N");
-        var state = new MutableJobState(operationId, "image", 1);
+        var state = new MutableJobState(operationId, "image", groups.Count);
         _states[operationId] = state;
 
         try
         {
             var coreJobId = jobService.Enqueue(
                 "ext:duplicate-manager-delete-images",
-                "[Duplicate Manager] Copy metadata and clean a duplicate image group",
-                (progress, ct) => RunImageJobAsync(operationId, normalized, progress, ct),
+                $"[Duplicate Manager] Copy metadata and clean {groups.Count} duplicate photo group{(groups.Count == 1 ? string.Empty : "s")}",
+                (progress, ct) => RunImageJobAsync(operationId, groups, progress, ct),
                 exclusive: true);
             state.AttachCoreJob(coreJobId);
             return state.Snapshot();
@@ -185,19 +207,39 @@ public sealed class DuplicateDeletionJobService(
         }
     }
 
-    private async Task RunImageJobAsync(string operationId, ImageDeletionJobRequest request, IJobProgress progress, CancellationToken ct)
+    private async Task RunImageJobAsync(string operationId, IReadOnlyList<ImageDeletionJobRequest> groups, IJobProgress progress, CancellationToken ct)
     {
         var state = _states[operationId];
         state.Start();
-        state.BeginItem(request.TargetImageId, request.TargetImageId, "metadata");
         try
         {
-            progress.Report(0, "Copying duplicate image metadata");
-            await using var scope = scopeFactory.CreateAsyncScope();
-            await ProcessImageGroupAsync(scope.ServiceProvider, request, state, ct);
-            state.CompleteItem(request.TargetImageId, []);
+            for (var index = 0; index < groups.Count; index++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var group = groups[index];
+                state.BeginItem(group.TargetImageId, group.TargetImageId, "metadata");
+                progress.Report((double)index / groups.Count, $"Cleaning photo group {index + 1} of {groups.Count}");
+                try
+                {
+                    await using var scope = scopeFactory.CreateAsyncScope();
+                    await ProcessImageGroupAsync(scope.ServiceProvider, group, state, ct);
+                    state.CompleteItem(group.TargetImageId, []);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Duplicate Manager could not clean image group for keeper {TargetImageId}", group.TargetImageId);
+                    state.FailItem(group.TargetImageId, ex is DuplicateDeletionStageException stage ? stage.Stage : state.Stage, ex.Message);
+                }
+                progress.Report((double)(index + 1) / groups.Count, $"Processed photo group {index + 1} of {groups.Count}");
+            }
             state.Finish();
-            progress.Report(1, "Duplicate image cleanup complete");
+            if (state.FailedCount > 0)
+            {
+                progress.Report(1, "Duplicate photo cleanup completed with errors");
+                throw new InvalidOperationException($"{state.FailedCount} duplicate photo group{(state.FailedCount == 1 ? string.Empty : "s")} failed.");
+            }
+            progress.Report(1, "Duplicate photo cleanup complete");
         }
         catch (OperationCanceledException)
         {
@@ -206,10 +248,8 @@ public sealed class DuplicateDeletionJobService(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Duplicate Manager could not clean image group for keeper {TargetImageId}", request.TargetImageId);
-            state.FailItem(request.TargetImageId, ex is DuplicateDeletionStageException stage ? stage.Stage : state.Stage, ex.Message);
-            state.Finish();
-            progress.Report(1, "Duplicate image cleanup completed with errors");
+            if (!string.Equals(state.Status, "partial", StringComparison.Ordinal))
+                state.Fatal(ex.Message);
             throw;
         }
     }

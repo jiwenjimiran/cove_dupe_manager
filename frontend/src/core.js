@@ -121,6 +121,20 @@ export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "
   return query ? `?${query}` : "";
 }
 
+export function photoGroupKey(group) {
+  return group.images.map((image) => image.id).sort((left, right) => left - right).join(":");
+}
+
+export function photoCleanupPlan(group, keeperId = group.recommendedKeeperId) {
+  const keeper = group.images.find((image) => image.id === keeperId);
+  if (!keeper || group.images.length < 2) return null;
+  return {
+    targetImageId: keeper.id,
+    sourceImageIds: group.images.filter((image) => image.id !== keeper.id).map((image) => image.id),
+    fileIds: group.matchedFiles.filter((file) => file.imageId !== keeper.id && !file.inArchive).map((file) => file.id),
+  };
+}
+
 export function comparisonPlayback(video) {
   const file = primaryFile(video);
   const format = normalizeContainer(file?.format, file?.path || file?.basename);

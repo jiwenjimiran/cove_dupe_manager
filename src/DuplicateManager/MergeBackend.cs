@@ -38,6 +38,9 @@ public sealed partial class DuplicateManagerExtension
         group.MapPost("/images/deletion-jobs", StartImageDeletionJobAsync)
             .RequireCovePermission("images.write")
             .RequireCovePermission("images.delete");
+        group.MapPost("/images/batch-deletion-jobs", StartImageBatchDeletionJobAsync)
+            .RequireCovePermission("images.write")
+            .RequireCovePermission("images.delete");
         group.MapGet("/images/deletion-jobs/{operationId}", GetImageDeletionJob)
             .RequireCovePermission("images.read");
         group.MapPost("/images/merge", MergeImagesAsync)
@@ -80,6 +83,22 @@ public sealed partial class DuplicateManagerExtension
         try
         {
             var snapshot = http.RequestServices.GetRequiredService<DuplicateDeletionJobService>().StartImageJob(request);
+            return Results.Accepted($"/api/ext/duplicate-manager/images/deletion-jobs/{snapshot.OperationId}", snapshot);
+        }
+        catch (ArgumentException ex)
+        {
+            return Results.BadRequest(new { message = ex.Message });
+        }
+    }
+
+    private static async Task<IResult> StartImageBatchDeletionJobAsync(HttpContext http, CancellationToken ct)
+    {
+        var request = await http.Request.ReadFromJsonAsync<ImageBatchDeletionJobRequest>(cancellationToken: ct);
+        if (request is null)
+            return Results.BadRequest(new { message = "A photo cleanup request is required." });
+        try
+        {
+            var snapshot = http.RequestServices.GetRequiredService<DuplicateDeletionJobService>().StartImageBatchJob(request);
             return Results.Accepted($"/api/ext/duplicate-manager/images/deletion-jobs/{snapshot.OperationId}", snapshot);
         }
         catch (ArgumentException ex)

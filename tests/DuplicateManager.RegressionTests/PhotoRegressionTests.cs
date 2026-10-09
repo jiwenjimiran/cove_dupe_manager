@@ -1,4 +1,5 @@
 using Cove.Core.Entities;
+using Cove.Core.Interfaces;
 using Cove.Data;
 using Cove.DuplicateManager;
 using Microsoft.EntityFrameworkCore;
@@ -58,6 +59,21 @@ internal static class PhotoRegressionTests
             && keeper.Photographer == "Donor photographer", "Photo scalar metadata was not copied to the keeper.");
         Check(await db.ImageFiles.CountAsync(file => file.ImageId == 3) == 2,
             "Photo files were not attached to the keeper before pruning.");
+        var service = new DuplicateDeletionJobService(null!, new StubJobs(), null!);
+        var batch = service.StartImageBatchJob(new ImageBatchDeletionJobRequest([
+            new ImageDeletionJobRequest(10, [11], [101]),
+            new ImageDeletionJobRequest(20, [21], [201]),
+        ]));
+        Check(batch.Total == 2 && batch.MediaType == "image", "Bulk photo cleanup did not queue one job for both groups.");
+        try
+        {
+            service.StartImageBatchJob(new ImageBatchDeletionJobRequest([
+                new ImageDeletionJobRequest(10, [11], [101]),
+                new ImageDeletionJobRequest(20, [11], [201]),
+            ]));
+            throw new InvalidOperationException("Overlapping photo groups were accepted for bulk cleanup.");
+        }
+        catch (ArgumentException) { }
         Console.WriteLine("Photo fingerprint, pHash, title, folder scope, ranking and metadata checks passed.");
     }
 
@@ -78,5 +94,18 @@ internal static class PhotoRegressionTests
     private static void Check(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private sealed class StubJobs : IJobService
+    {
+        public string Enqueue(string type, string description, Func<IJobProgress, CancellationToken, Task> work, bool exclusive = true)
+            => "photo-cleanup-job";
+        public string EnqueueOwned(JobOwner owner, string type, string description, Func<IJobProgress, CancellationToken, Task> work,
+            string? resultUrl = null, bool exclusive = true) => "photo-cleanup-job";
+        public bool Cancel(string jobId) => false;
+        public bool ReorderQueued(string jobId, string? beforeJobId) => false;
+        public JobInfo? GetJob(string jobId) => null;
+        public IReadOnlyList<JobInfo> GetAllJobs() => [];
+        public IReadOnlyList<JobInfo> GetJobHistory() => [];
     }
 }
