@@ -31,6 +31,7 @@ finally
 }
 
 await PhotoRegressionTests.RunAsync();
+await VideoSegmentTransferRegressionTests.RunAsync();
 await SearchRegressionTests.RunAsync();
 
 static void Assert(bool condition, string message)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.6 - 2026-10-09
+
+- Copy generated video segments to the keeper when confirmed metadata cleanup removes a video whose primary file is within one second of the keeper's primary file.
+- Preserve user markers for same-length videos when Cove's fingerprint check would otherwise leave them behind, and avoid copying segments already on the keeper.
+
 ## 2.1.5 - 2026-10-09
 
 - Match scanned photos without metadata titles by their filename stems in Same title mode.

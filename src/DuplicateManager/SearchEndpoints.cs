@@ -106,6 +106,8 @@ public sealed partial class DuplicateManagerExtension
             }
         }
         search.GroupCount = definitions.Count;
+        if (request.CopyMetadata)
+            await VideoSegmentTransfer.CopyForCleanupAsync(db, items, records, ct);
         await db.SaveChangesAsync(ct);
         return Results.Ok(new { searchId = search.Id, groups = definitions.Select(entry => new
         {
