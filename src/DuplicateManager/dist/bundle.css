@@ -60,6 +60,18 @@
   font-size: .75rem;
   font-weight: 600;
 }
+.dm-controls .dm-folder-match {
+  display: flex;
+  align-items: center;
+  grid-column: span 2;
+  margin-top: 0;
+  padding: .45rem .65rem;
+}
+.dm-controls .dm-folder-match input {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
 .dm-controls input,
 .dm-controls select,
 .dm-result-toolbar select,

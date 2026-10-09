@@ -127,6 +127,8 @@ public sealed class DuplicateManagerSettings
     public string FingerprintAlgorithm { get; set; } = "any";
     public int PhashDistance { get; set; } = 8;
     public double MaxDurationDelta { get; set; } = 10;
+    public double ExactDurationDelta { get; set; } = 0;
+    public bool CompareSameFolder { get; set; } = true;
     public double MinimumDuration { get; set; } = 0;
     public int PageSize { get; set; } = 25;
     public List<string> PreferredCodecs { get; set; } = ["av1", "hevc", "h264", "vp9", "mpeg4"];
@@ -150,6 +152,7 @@ public sealed class DuplicateManagerSettings
             : "any";
         settings.PhashDistance = Math.Clamp(settings.PhashDistance, 0, 64);
         settings.MaxDurationDelta = Math.Clamp(settings.MaxDurationDelta, 0, 86_400);
+        settings.ExactDurationDelta = Math.Clamp(settings.ExactDurationDelta, 0, 86_400);
         settings.MinimumDuration = Math.Clamp(settings.MinimumDuration, 0, 86_400_000);
         settings.PageSize = Math.Clamp(settings.PageSize, 1, 10_000);
         settings.PreferredCodecs = NormalizeList(settings.PreferredCodecs, ["av1", "hevc", "h264", "vp9", "mpeg4"], lowerCase: true);

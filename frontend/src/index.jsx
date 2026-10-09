@@ -7,7 +7,7 @@ import {
 import { cancelDuplicateSearch, findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
-  deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, exactMatchDuration, filterGroups, formatBytes,
+  deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
   displayPath, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
   parsePageSizeInput, phashComparison, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
@@ -17,7 +17,7 @@ import { buildDeletionQueue, removeVideoIdsFromGroups, runDeletionJob, runImageD
 const { useEffect, useMemo, useRef, useState } = React;
 
 function confirmDurationMatch() {
-  return window.confirm("Exact duration only compares video lengths. Different videos can have the same duration and will be grouped together. Review every match carefully before deleting anything. Continue?");
+  return window.confirm("Duration matching compares file lengths within the chosen delta. Unrelated videos can have similar lengths and will be grouped together. Review every match carefully before deleting anything. Continue?");
 }
 
 export function DuplicateManagerPage({ onNavigate }) {
@@ -125,9 +125,14 @@ export function DuplicateManagerPage({ onNavigate }) {
         setSearchProgress(progress);
         if (resumeSearchId && progress.includePaths) {
           const include = progress.includePaths || [], exclude = progress.excludePaths || [];
+          const restoredType = String(progress.matchType).toLowerCase();
           searchSettings = normalizeSettings({ ...searchSettings,
-            matchType: String(progress.matchType).toLowerCase(), phashDistance: progress.distance,
-            maxDurationDelta: progress.durationDiff, minimumDuration: progress.minimumDuration,
+            matchType: restoredType === "durationfolder" ? "duration" : restoredType,
+            compareSameFolder: restoredType === "durationfolder" ? true : restoredType === "duration" ? false : searchSettings.compareSameFolder,
+            phashDistance: progress.distance,
+            maxDurationDelta: restoredType === "phash" ? progress.durationDiff : searchSettings.maxDurationDelta,
+            exactDurationDelta: restoredType.startsWith("duration") ? progress.durationDiff : searchSettings.exactDurationDelta,
+            minimumDuration: progress.minimumDuration,
             folderMode: include.length ? "include" : exclude.length ? "exclude" : "all",
             includedPaths: include.length ? include : exclude,
           });
@@ -283,6 +288,10 @@ export function DuplicateManagerPage({ onNavigate }) {
         <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => updateSettings({ phashDistance: Number(event.target.value) })} /></label>
         <label><span>Duration delta (sec)</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => updateSettings({ maxDurationDelta: Number(event.target.value) })} /></label>
       </>}
+      {settings.matchType === "duration" && <>
+        <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => updateSettings({ exactDurationDelta: Number(event.target.value) })} /></label>
+        <label className="dm-checkbox-row dm-folder-match"><input type="checkbox" checked={settings.compareSameFolder} onChange={(event) => updateSettings({ compareSameFolder: event.target.checked })} /><span>Compare files only at same level<small>Match files in the same immediate parent folder.</small></span></label>
+      </>}
       <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => updateSettings({ minimumDuration })} />
       <FolderScopeControl settings={settings} onChange={updateSettings} onPick={() => setFolderOpen(true)} />
       <button className="dm-primary" disabled={loading || deletionPending} onClick={() => runSearch()}>{loading ? <Loader2 className="dm-spin" size={17} /> : <Search size={17} />}{loading ? "Searching" : "Find duplicates"}</button>
@@ -345,7 +354,7 @@ function DuplicateGroup({ group, number, settings, matchSettings, selectedIds, o
   const risk = groupRisk(group);
   const reason = keeperReason(group, settings);
   return <section className="dm-group">
-    <header><div><strong>Group {number}</strong><span>{group.length} videos</span>{matchSettings.matchType === "duration" && <span>Exact duration: {exactMatchDuration(group[0])} s</span>}{risk.score > 0 && <span title={risk.notes.join("; ")}>risk {risk.score}</span>}<span title={reason.text}>{reason.step}</span></div><div>
+    <header><div><strong>Group {number}</strong><span>{group.length} videos</span>{matchSettings.matchType === "duration" && <span>Duration delta: {matchSettings.exactDurationDelta} s{matchSettings.compareSameFolder ? " · same folder" : ""}</span>}{risk.score > 0 && <span title={risk.notes.join("; ")}>risk {risk.score}</span>}<span title={reason.text}>{reason.step}</span></div><div>
       <button className="dm-secondary" onClick={onCompare}><Columns2 size={15} />Compare</button>
       <button className="dm-secondary" onClick={onSelectRecommended}>Keep recommended</button>
       <button className="dm-icon-button" title="Remove this comparison" aria-label="Remove this comparison" onClick={onDismiss}><X size={16} /></button>
@@ -856,7 +865,8 @@ export function DuplicateManagerSettingsPanel() {
   const availableRules = Object.keys(RULE_LABELS).filter((rule) => !settings.keeperRules.includes(rule));
   return <div className="dm-settings">
     <div className="dm-settings-heading"><div><h3><Settings2 size={19} />Duplicate Manager</h3><p>Defaults used when the improved Duplicate Finder opens.</p></div><button className="dm-primary" disabled={saving} onClick={save}>{saving ? <Loader2 className="dm-spin" size={16} /> : <Save size={16} />}Save</button></div>
-    <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="duration">Exact duration</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>{settings.matchType === "fingerprint" && <label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label>}{settings.matchType === "phash" && <><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label></>}<DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
+    <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="duration">Exact duration</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>{settings.matchType === "fingerprint" && <label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label>}{settings.matchType === "phash" && <><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label></>}{settings.matchType === "duration" && <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => update({ exactDurationDelta: Number(event.target.value) })} /></label>}<DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
+    {settings.matchType === "duration" && <label className="dm-checkbox-row"><input type="checkbox" checked={settings.compareSameFolder} onChange={(event) => update({ compareSameFolder: event.target.checked })} /><span>Compare files only at same level<small>Match files in the same immediate parent folder.</small></span></label>}
     <section><h4>Ranking mode</h4><p>Balanced explains codec-aware quality decisions; custom uses your ordered rules.</p><select value={settings.rankingMode} onChange={(event) => update({ rankingMode: event.target.value })}><option value="balanced">Balanced quality (recommended)</option><option value="custom">Custom rule order</option></select></section>
     <section><h4>Preferred codecs</h4><p>Used by custom ranking, best to worst.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>
     <section><h4>Default folder scope</h4><p>Search all folders, only selected folders, or everything except selected folders.</p><FolderScopeControl settings={settings} onChange={update} onPick={() => setFolderOpen(true)} settingsView /></section>

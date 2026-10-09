@@ -24,7 +24,8 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Curated cover preservation: keep the keeper's saved cover, otherwise carry over a donor's saved cover; metadata overwriting never replaces it with a generated frame
 - Exact MD5/OSHash and configurable visual pHash matching
 - Same-title and same-remote-ID matching compatible with Cove's built-in finder
-- Exact-duration matching for videos with the same longest-file length, with a confirmation warning because unrelated videos can share a duration
+- Duration matching with an optional fractional-second delta and a warning because unrelated videos can share a similar length
+- Same-parent-folder matching by default for duration searches, so one search can cover many folders without pairing files across them
 - Shareable search URLs that restore controls, result-filter queries, and run the duplicate search after refresh
 - All/include/exclude folder scope, text filtering, group pagination, and session-cached results
 - Select-to-delete workflow with automatic "keep recommended" rules
@@ -38,7 +39,7 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Saved metadata-transfer defaults, including checked-by-default missing-value copying and optional conflict overwriting
 - Defaults under `Settings -> Extensions -> Installed -> Duplicate Manager`
 
-Version 2.1.1 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
+Version 2.1.2 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
 
 ## Build
 
@@ -105,6 +106,11 @@ Cove's folder scoping, ignored-pair handling, cancellation, durable result reten
 bounded persisted groups. Search candidate counts, estimated memory, comparison counts,
 and result-group counts do not have admission caps. Large searches can take longer and
 use more actual server and browser memory. The metadata field/path validation remains.
+
+Duration matching compares the longest eligible file per video in each immediate parent
+folder. When same-folder matching is off, it compares the longest eligible file per video
+across folders. Each result group spans no more than the configured duration delta;
+zero-length files are excluded.
 
 Video cleanup uses Cove's core `resolve` endpoint with the reviewed keepers, so Cove owns
 metadata merging, engagement/provenance transfer, child-video handling, keeper protection,

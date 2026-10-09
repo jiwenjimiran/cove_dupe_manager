@@ -3,6 +3,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   fingerprintAlgorithm: "any",
   phashDistance: 8,
   maxDurationDelta: 10,
+  exactDurationDelta: 0,
+  compareSameFolder: true,
   minimumDuration: 0,
   pageSize: 25,
   preferredCodecs: ["av1", "hevc", "h264", "vp9", "mpeg4"],
@@ -16,7 +18,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const SEARCH_PARAM_NAMES = Object.freeze([
-  "match", "algorithm", "maxDistance", "durationDelta", "minLength", "folderMode", "folder", "groups", "page", "query",
+  "match", "algorithm", "maxDistance", "durationDelta", "exactDelta", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
 ]);
 
 // Keep this aligned with Cove's VideoPlayer compatibility fallback. These containers are
@@ -54,6 +56,8 @@ export function normalizeSettings(value) {
     fingerprintAlgorithm: ["any", "md5", "oshash"].includes(incoming.fingerprintAlgorithm) ? incoming.fingerprintAlgorithm : "any",
     phashDistance: clampNumber(incoming.phashDistance, 0, 64, 8),
     maxDurationDelta: clampNumber(incoming.maxDurationDelta, 0, 86400, 10),
+    exactDurationDelta: clampNumber(incoming.exactDurationDelta, 0, 86400, 0),
+    compareSameFolder: incoming.compareSameFolder !== false,
     minimumDuration: clampNumber(incoming.minimumDuration, 0, 86400000, 0),
     pageSize: clampNumber(incoming.pageSize, 1, 10000, 25),
     preferredCodecs: uniqueStrings(incoming.preferredCodecs, DEFAULT_SETTINGS.preferredCodecs),
@@ -78,6 +82,8 @@ export function duplicateSearchFromUrl(search) {
   if (params.has("algorithm")) patch.fingerprintAlgorithm = params.get("algorithm");
   if (params.has("maxDistance")) patch.phashDistance = params.get("maxDistance");
   if (params.has("durationDelta")) patch.maxDurationDelta = params.get("durationDelta");
+  if (params.has("exactDelta")) patch.exactDurationDelta = params.get("exactDelta");
+  if (params.has("sameFolder")) patch.compareSameFolder = params.get("sameFolder") !== "false";
   if (params.has("minLength")) patch.minimumDuration = params.get("minLength");
   if (params.has("folderMode")) patch.folderMode = params.get("folderMode");
   if (params.has("folder")) patch.includedPaths = params.getAll("folder");
@@ -95,6 +101,8 @@ export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "
   params.set("algorithm", normalized.fingerprintAlgorithm);
   params.set("maxDistance", String(normalized.phashDistance));
   params.set("durationDelta", String(normalized.maxDurationDelta));
+  params.set("exactDelta", String(normalized.exactDurationDelta));
+  params.set("sameFolder", String(normalized.compareSameFolder));
   params.set("minLength", String(normalized.minimumDuration));
   params.set("folderMode", normalized.folderMode);
   for (const path of normalized.includedPaths) params.append("folder", path);
@@ -127,11 +135,15 @@ export function transcodeResolutionCandidates(values) {
 
 export function prepareGroups(apiGroups, options) {
   const settings = normalizeSettings(options);
+  // Duration candidates are scoped and partitioned by the server's file-level rules.
+  // Re-merging overlapping video IDs here could cross an immediate folder boundary.
+  if (settings.matchType === "duration")
+    return (apiGroups || []).map(uniqueVideos).filter((group) => group.length > 1);
   const paths = settings.includedPaths.map(normalizePath).filter(Boolean);
   const scoped = (apiGroups || [])
     .map((group) => group.filter((video) =>
       matchesFolderScope(video, paths, settings.folderMode)
-      && (settings.matchType === "duration" ? exactMatchDuration(video) : Number(primaryFile(video)?.duration || 0)) >= settings.minimumDuration))
+      && Number(primaryFile(video)?.duration || 0) >= settings.minimumDuration))
     .filter((group) => group.length > 1);
 
   if (settings.matchType === "phash") return partitionPhashGroups(scoped, settings);
@@ -289,13 +301,6 @@ export function metadataCount(video) {
 
 export function primaryFile(video) {
   return [...(video?.files || [])].sort((a, b) => fileResolution(b) - fileResolution(a) || Number(b.size || 0) - Number(a.size || 0))[0] || null;
-}
-
-export function exactMatchDuration(video) {
-  return (video?.files || []).reduce((longest, file) => {
-    const duration = Number(file.duration);
-    return Number.isFinite(duration) ? Math.max(longest, duration) : longest;
-  }, 0);
 }
 
 export function formatBytes(value) {

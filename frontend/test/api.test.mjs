@@ -240,7 +240,7 @@ test("comparison loads Cove's configured transcode resolutions", async () => {
   assert.equal(requestedPath, "/api/stream/video/42/resolutions");
 });
 
-test("background duplicate requests pass title and remote ID scope to Cove", async () => {
+test("background duplicate requests pass match options and scope to Cove", async () => {
   const bodies = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (path, options = {}) => {
@@ -256,12 +256,18 @@ test("background duplicate requests pass title and remote ID scope to Cove", asy
   try {
     await findDuplicates({ matchType: "title", folderMode: "include", includedPaths: ["/library"], minimumDuration: 30 });
     await findDuplicates({ matchType: "remoteid", folderMode: "exclude", includedPaths: ["/trash"] });
+    await findDuplicates({ matchType: "duration", exactDurationDelta: 0.1, compareSameFolder: true });
+    await findDuplicates({ matchType: "duration", exactDurationDelta: 0.2, compareSameFolder: false });
   } finally { globalThis.fetch = originalFetch; }
   assert.equal(bodies[0].matchType, "title");
   assert.deepEqual(bodies[0].includePaths, ["/library"]);
   assert.equal(bodies[0].minimumDuration, 30);
   assert.equal(bodies[1].matchType, "remoteid");
   assert.deepEqual(bodies[1].excludePaths, ["/trash"]);
+  assert.equal(bodies[2].durationDiff, 0.1);
+  assert.equal(bodies[2].compareSameFolder, true);
+  assert.equal(bodies[3].durationDiff, 0.2);
+  assert.equal(bodies[3].compareSameFolder, false);
 });
 
 test("permanent deletion passes the source-file choice directly to Cove", async () => {

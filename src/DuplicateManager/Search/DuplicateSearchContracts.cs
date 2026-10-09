@@ -7,7 +7,8 @@ public sealed record DuplicateSearchStartRequest(
     IReadOnlyList<string>? IncludePaths = null,
     IReadOnlyList<string>? ExcludePaths = null,
     double MinimumDuration = 0,
-    IReadOnlyList<DuplicateKeeperRule>? KeeperRules = null);
+    IReadOnlyList<DuplicateKeeperRule>? KeeperRules = null,
+    bool CompareSameFolder = true);
 
 public sealed record DuplicateSearchStarted(Guid SearchId, string JobId, int CandidateCount);
 

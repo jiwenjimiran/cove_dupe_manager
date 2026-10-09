@@ -10,7 +10,6 @@ import {
   displayPath,
   duplicateSearchFromUrl,
   duplicateSearchToUrl,
-  exactMatchDuration,
   filterGroups,
   groupRisk,
   keeperReason,
@@ -86,14 +85,18 @@ test("normalizes all Cove duplicate match types", () => {
   assert.equal(normalizeSettings({ matchType: "remoteid" }).matchType, "remoteid");
   assert.equal(normalizeSettings({ matchType: "duration" }).matchType, "duration");
   assert.equal(duplicateSearchFromUrl(duplicateSearchToUrl("", { matchType: "duration" })).settings.matchType, "duration");
+  assert.equal(normalizeSettings({}).compareSameFolder, true);
+  assert.equal(normalizeSettings({}).exactDurationDelta, 0);
+  const restored = duplicateSearchFromUrl(duplicateSearchToUrl("", { matchType: "duration", exactDurationDelta: 0.1, compareSameFolder: false }));
+  assert.equal(normalizeSettings(restored.settings).exactDurationDelta, 0.1);
+  assert.equal(normalizeSettings(restored.settings).compareSameFolder, false);
 });
 
-test("exact duration uses the longest file for minimum length filtering", () => {
+test("duration results keep the server's folder and delta groups separate", () => {
   const a = video(1, { duration: 30 });
-  a.files.push({ duration: 60, width: 1, height: 1, size: 1 });
   const b = video(2, { duration: 60 });
-  assert.equal(exactMatchDuration(a), 60);
-  assert.deepEqual(prepareGroups([[a, b]], { matchType: "duration", minimumDuration: 60 }), [[a, b]]);
+  const c = video(3, { duration: 60 });
+  assert.deepEqual(prepareGroups([[a, b], [b, c]], { matchType: "duration", minimumDuration: 60 }), [[a, b], [b, c]]);
 });
 
 test("duplicate search controls round-trip through URL parameters", () => {

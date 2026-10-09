@@ -35,6 +35,8 @@ public sealed class DuplicateSearchJobService(
     {
         var ids = candidateVideoIds is null ? null : DuplicateSearchMemoryBudget.NormalizeIds(candidateVideoIds);
         var matchType = NormalizeMatchType(request.MatchType);
+        if (matchType == "duration" && request.CompareSameFolder)
+            matchType = "durationFolder";
         var search = new DuplicateSearch
         {
             OwnerKey = owner?.Key,
@@ -159,7 +161,8 @@ public sealed class DuplicateSearchJobService(
     {
         "phash" => "visual similarity",
         "title" => "title",
-        "duration" => "exact duration",
+        "duration" => "duration",
+        "durationFolder" => "duration in the same folder",
         "remoteId" => "remote ID",
         FilesMatchType => "files on the same video",
         _ => "file fingerprint",
@@ -251,8 +254,9 @@ public sealed class DuplicateSearchExecutionService(
                     groups = await FindTitleGroupsAsync(ids, ignored, memoryBudget, ct);
                     break;
                 case "duration":
-                    progress.Report(0.1, "Comparing exact video durations");
-                    groups = await FindDurationGroupsAsync(ids, ignored, memoryBudget, ct);
+                case "durationFolder":
+                    progress.Report(0.1, "Comparing video durations");
+                    groups = await FindDurationGroupsAsync(ids, search, ignored, memoryBudget, ct);
                     break;
                 case "remoteId":
                     progress.Report(0.1, "Comparing remote IDs");
@@ -419,31 +423,60 @@ public sealed class DuplicateSearchExecutionService(
 
     private async Task<List<List<int>>> FindDurationGroupsAsync(
         int[] candidateVideoIds,
+        DuplicateSearch search,
         HashSet<(int Low, int High)> ignored,
         DuplicateSearchMemoryBudget memoryBudget,
         CancellationToken ct)
     {
-        // A video may have multiple files. Give it one duration so it cannot bridge
-        // groups with different lengths. The longest file matches Cove's MaxDuration.
-        var durations = new Dictionary<int, double>();
+        var sameFolder = search.MatchType == "durationFolder";
+        var durations = new Dictionary<(int FolderId, int VideoId), double>();
+        var includes = search.IncludePaths ?? [];
+        var excludes = search.ExcludePaths ?? [];
         foreach (var chunk in candidateVideoIds.Chunk(QueryChunkSize))
         {
             var query = db.VideoFiles
-                .Where(file => file.VideoId.HasValue && chunk.Contains(file.VideoId.Value) && file.Duration > 0)
-                .Select(file => new { SourceId = file.Id, VideoId = file.VideoId!.Value, file.Duration })
+                .Where(file => file.VideoId.HasValue && chunk.Contains(file.VideoId.Value)
+                    && file.Duration > 0 && file.Duration >= search.MinimumDuration)
+                .Select(file => new
+                {
+                    SourceId = file.Id, VideoId = file.VideoId!.Value, file.ParentFolderId, file.Duration,
+                    Path = file.Path.Length > DuplicateSearchMemoryBudget.MaximumFieldCharacters
+                        ? file.Path.Substring(0, DuplicateSearchMemoryBudget.MaximumFieldCharacters + 1) : file.Path,
+                })
                 .AsNoTracking();
             await foreach (var row in ReadCandidatePagesAsync(query, row => row.SourceId, memoryBudget,
-                _ => (0, 0), false, ct))
+                row => (row.Path.Length, row.Path.Length), false, ct))
             {
-                if (double.IsFinite(row.Duration) && (!durations.TryGetValue(row.VideoId, out var current) || row.Duration > current))
-                    durations[row.VideoId] = row.Duration;
+                if (!double.IsFinite(row.Duration)
+                    || (includes.Length > 0 && !includes.Any(folder => DuplicateSearchJobService.IsAtOrBelow(row.Path, folder)))
+                    || excludes.Any(folder => DuplicateSearchJobService.IsAtOrBelow(row.Path, folder)))
+                    continue;
+                // Choose one file per video in each immediate folder. This prevents a video
+                // with multiple files from bridging otherwise unrelated duration groups.
+                var key = (sameFolder ? row.ParentFolderId : 0, row.VideoId);
+                if (!durations.TryGetValue(key, out var current) || row.Duration > current)
+                    durations[key] = row.Duration;
             }
         }
 
-        return GroupBuckets(
-            durations.GroupBy(row => row.Value).Select(bucket => bucket.Select(row => row.Key)),
-            ignored,
-            memoryBudget);
+        var delta = Math.Max(0, search.DurationDifference);
+        var groups = new List<List<int>>();
+        foreach (var folder in durations.GroupBy(row => row.Key.FolderId))
+        {
+            var sorted = folder.Select(row => (row.Key.VideoId, Duration: row.Value))
+                .OrderBy(row => row.Duration).ThenBy(row => row.VideoId).ToArray();
+            for (var start = 0; start < sorted.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                var end = start + 1;
+                while (end < sorted.Length && sorted[end].Duration - sorted[start].Duration <= delta + 1e-9)
+                    end++;
+                if (end - start > 1)
+                    groups.AddRange(GroupBuckets([sorted[start..end].Select(row => row.VideoId)], ignored, memoryBudget));
+                start = end;
+            }
+        }
+        return groups.OrderBy(group => group[0]).ToList();
     }
 
     private async Task<List<List<int>>> FindRemoteIdGroupsAsync(

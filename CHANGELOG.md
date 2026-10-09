@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.2 - 2026-10-08
+
+- Add a separate fractional-second delta to duration matching, defaulting to zero.
+- Compare duration matches within the same immediate parent folder by default, with an option to compare across all folders.
+- Preserve folder and delta settings in saved defaults and shareable search links.
+
 ## 2.1.1 - 2026-10-08
 
 - Add exact-duration duplicate search using each video's longest file duration, with no pHash or duration-delta tolerance.
