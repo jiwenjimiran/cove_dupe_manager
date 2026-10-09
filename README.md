@@ -1,6 +1,6 @@
 # Duplicate Manager for Cove
 
-Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow designed for reviewing and deleting many duplicate videos at once.
+Duplicate Manager replaces Cove's built-in Duplicate Finder with workflows for reviewing duplicate videos and photos.
 
 ## Screenshots
 
@@ -23,6 +23,7 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Core-owned video cleanup with keeper reservations, permission checks, metadata/provenance migration, and transactional file deletion
 - Curated cover preservation: keep the keeper's saved cover, otherwise carry over a donor's saved cover; metadata overwriting never replaces it with a generated frame
 - Exact MD5/OSHash and configurable visual pHash matching
+- Photo duplicate finding with exact fingerprints, visual pHash, or title; highest-resolution keeper recommendations, with smaller file size as the tie breaker
 - Same-title and same-remote-ID matching compatible with Cove's built-in finder
 - Duration matching with an optional fractional-second delta and a warning because unrelated videos can share a similar length
 - Same-parent-folder matching by default for duration searches, so one search can cover many folders without pairing files across them
@@ -39,7 +40,7 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with a workflow desi
 - Saved metadata-transfer defaults, including checked-by-default missing-value copying and optional conflict overwriting
 - Defaults under `Settings -> Extensions -> Installed -> Duplicate Manager`
 
-Version 2.1.2 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
+Version 2.1.3 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
 
 ## Build
 
@@ -61,7 +62,7 @@ Create an installable ZIP:
 .\scripts\package.ps1
 ```
 
-The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.1.0.zip`.
+The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.1.3.zip`.
 
 ## Upgrade from 1.6.0 or older
 
@@ -80,7 +81,7 @@ installation. This does not affect Cove video metadata or source files.
 
 1. Open Cove and go to `Settings -> Extensions -> Installed`.
 2. Choose **Install from URL**.
-3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.1.0.zip` from the GitHub release.
+3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.1.3.zip` from the GitHub release.
 4. Enable the extension if Cove does not enable it automatically, then reload Cove.
 5. Open Cove's existing **Duplicate Finder**. The extension replaces that page.
 

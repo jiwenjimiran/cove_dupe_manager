@@ -92,6 +92,18 @@ test("normalizes all Cove duplicate match types", () => {
   assert.equal(normalizeSettings(restored.settings).compareSameFolder, false);
 });
 
+test("photo searches keep their media type in URLs and restrict match types to photo data", () => {
+  assert.equal(normalizeSettings({}).mediaType, "videos");
+  assert.equal(normalizeSettings({ mediaType: "photos", matchType: "duration" }).matchType, "fingerprint");
+  assert.equal(normalizeSettings({ mediaType: "photos", matchType: "remoteid" }).matchType, "fingerprint");
+  const settings = normalizeSettings({ mediaType: "photos", matchType: "phash", phashDistance: 5 });
+  const restored = duplicateSearchFromUrl(duplicateSearchToUrl("", settings));
+  assert.equal(restored.hasSearchParams, true);
+  assert.equal(normalizeSettings(restored.settings).mediaType, "photos");
+  assert.equal(normalizeSettings(restored.settings).matchType, "phash");
+  assert.equal(normalizeSettings(restored.settings).phashDistance, 5);
+});
+
 test("duration results keep the server's folder and delta groups separate", () => {
   const a = video(1, { duration: 30 });
   const b = video(2, { duration: 60 });

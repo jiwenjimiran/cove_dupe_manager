@@ -23,7 +23,7 @@ public sealed partial class DuplicateManagerExtension : IExtension, IUIExtension
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "2.1.0";
+    public string Version => "2.1.3";
     public string? Description => "Safe, explainable duplicate review and cleanup for Cove videos and images.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";
@@ -124,6 +124,7 @@ public sealed class DuplicateManagerSettings
     private static readonly string[] DefaultKeeperRules = ["resolution", "codec", "bitrate", "duration", "metadata", "oldest"];
 
     public string MatchType { get; set; } = "fingerprint";
+    public string MediaType { get; set; } = "videos";
     public string FingerprintAlgorithm { get; set; } = "any";
     public int PhashDistance { get; set; } = 8;
     public double MaxDurationDelta { get; set; } = 10;
@@ -144,9 +145,12 @@ public sealed class DuplicateManagerSettings
     {
         var isNewInstall = value is null;
         var settings = value ?? new DuplicateManagerSettings();
+        settings.MediaType = settings.MediaType?.Trim().ToLowerInvariant() == "photos" ? "photos" : "videos";
         settings.MatchType = settings.MatchType?.Trim().ToLowerInvariant() is "phash" or "title" or "remoteid" or "duration"
             ? settings.MatchType.Trim().ToLowerInvariant()
             : "fingerprint";
+        if (settings.MediaType == "photos" && (settings.MatchType is "remoteid" or "duration"))
+            settings.MatchType = "fingerprint";
         settings.FingerprintAlgorithm = settings.FingerprintAlgorithm?.Trim().ToLowerInvariant() is "md5" or "oshash"
             ? settings.FingerprintAlgorithm.Trim().ToLowerInvariant()
             : "any";

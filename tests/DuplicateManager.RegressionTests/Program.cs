@@ -30,6 +30,7 @@ finally
     Directory.Delete(root, true);
 }
 
+await PhotoRegressionTests.RunAsync();
 await SearchRegressionTests.RunAsync();
 
 static void Assert(bool condition, string message)

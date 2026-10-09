@@ -1,4 +1,5 @@
 export const DEFAULT_SETTINGS = Object.freeze({
+  mediaType: "videos",
   matchType: "fingerprint",
   fingerprintAlgorithm: "any",
   phashDistance: 8,
@@ -18,7 +19,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const SEARCH_PARAM_NAMES = Object.freeze([
-  "match", "algorithm", "maxDistance", "durationDelta", "exactDelta", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
+  "match", "media", "algorithm", "maxDistance", "durationDelta", "exactDelta", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
 ]);
 
 // Keep this aligned with Cove's VideoPlayer compatibility fallback. These containers are
@@ -49,10 +50,15 @@ export function normalizeSettings(value) {
   const keeperRules = Array.isArray(incoming.keeperRules) && migratedDefaults.some((rules) => incoming.keeperRules.join("|") === rules.join("|"))
     ? DEFAULT_SETTINGS.keeperRules
     : incoming.keeperRules;
+  const mediaType = incoming.mediaType === "photos" ? "photos" : "videos";
+  const allowedMatches = mediaType === "photos"
+    ? ["fingerprint", "phash", "title"]
+    : ["fingerprint", "phash", "title", "remoteid", "duration"];
   return {
     ...DEFAULT_SETTINGS,
     ...incoming,
-    matchType: ["fingerprint", "phash", "title", "remoteid", "duration"].includes(incoming.matchType) ? incoming.matchType : "fingerprint",
+    mediaType,
+    matchType: allowedMatches.includes(incoming.matchType) ? incoming.matchType : "fingerprint",
     fingerprintAlgorithm: ["any", "md5", "oshash"].includes(incoming.fingerprintAlgorithm) ? incoming.fingerprintAlgorithm : "any",
     phashDistance: clampNumber(incoming.phashDistance, 0, 64, 8),
     maxDurationDelta: clampNumber(incoming.maxDurationDelta, 0, 86400, 10),
@@ -79,6 +85,7 @@ export function duplicateSearchFromUrl(search) {
   const hasSearchParams = params.has("search") || SEARCH_PARAM_NAMES.some((name) => params.has(name));
   const patch = {};
   if (params.has("match")) patch.matchType = params.get("match");
+  if (params.has("media")) patch.mediaType = params.get("media");
   if (params.has("algorithm")) patch.fingerprintAlgorithm = params.get("algorithm");
   if (params.has("maxDistance")) patch.phashDistance = params.get("maxDistance");
   if (params.has("durationDelta")) patch.maxDurationDelta = params.get("durationDelta");
@@ -98,6 +105,7 @@ export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "
   const params = new URLSearchParams(search || "");
   for (const name of SEARCH_PARAM_NAMES) params.delete(name);
   params.set("match", normalized.matchType);
+  params.set("media", normalized.mediaType);
   params.set("algorithm", normalized.fingerprintAlgorithm);
   params.set("maxDistance", String(normalized.phashDistance));
   params.set("durationDelta", String(normalized.maxDurationDelta));

@@ -236,6 +236,19 @@ export function findDuplicateImages({ page = 1, pageSize = 25, minBytes = 0 } = 
   return request(`/api/ext/duplicate-manager/images/duplicates?page=${page}&pageSize=${pageSize}&minBytes=${minBytes}`);
 }
 
+export function findPhotoDuplicates(options) {
+  return request("/api/ext/duplicate-manager/images/find-duplicates", {
+    method: "POST",
+    body: JSON.stringify({
+      matchType: options.matchType,
+      fingerprintAlgorithm: options.fingerprintAlgorithm,
+      phashDistance: options.phashDistance,
+      includePaths: options.folderMode === "include" ? options.includedPaths : [],
+      excludePaths: options.folderMode === "exclude" ? options.includedPaths : [],
+    }),
+  });
+}
+
 export function mergeImages(targetImageId, sourceImageIds) {
   return request("/api/ext/duplicate-manager/images/merge", {
     method: "POST", body: JSON.stringify({ targetImageId, sourceImageIds }),

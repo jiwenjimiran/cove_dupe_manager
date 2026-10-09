@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, deleteVideo, findDuplicates,
+  AuthenticationRequiredError, authenticatedFetch, copyVideoMetadata, deleteVideo, findDuplicates, findPhotoDuplicates,
   loadTranscodeResolutions, mediaUrls, request, startImageDeletionJob, startVideoDeletionJob,
 } from "../src/api.js";
 
@@ -268,6 +268,26 @@ test("background duplicate requests pass match options and scope to Cove", async
   assert.equal(bodies[2].compareSameFolder, true);
   assert.equal(bodies[3].durationDiff, 0.2);
   assert.equal(bodies[3].compareSameFolder, false);
+});
+
+test("photo search passes the selected match and folder scope", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (path, options = {}) => {
+    assert.equal(path, "/api/ext/duplicate-manager/images/find-duplicates");
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ groups: [] }) };
+  };
+  try {
+    await findPhotoDuplicates({ matchType: "phash", fingerprintAlgorithm: "any", phashDistance: 5,
+      folderMode: "include", includedPaths: ["/photos"] });
+    await findPhotoDuplicates({ matchType: "fingerprint", fingerprintAlgorithm: "md5", phashDistance: 0,
+      folderMode: "exclude", includedPaths: ["/trash"] });
+  } finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual(bodies[0], { matchType: "phash", fingerprintAlgorithm: "any", phashDistance: 5,
+    includePaths: ["/photos"], excludePaths: [] });
+  assert.deepEqual(bodies[1], { matchType: "fingerprint", fingerprintAlgorithm: "md5", phashDistance: 0,
+    includePaths: [], excludePaths: ["/trash"] });
 });
 
 test("permanent deletion passes the source-file choice directly to Cove", async () => {

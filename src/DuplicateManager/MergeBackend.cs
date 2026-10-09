@@ -23,6 +23,18 @@ public sealed partial class DuplicateManagerExtension
             .RequireCovePermission("videos.write");
         group.MapGet("/images/duplicates", FindDuplicateImagesAsync)
             .RequireCovePermission("images.read");
+        group.MapPost("/images/find-duplicates", async (PhotoDuplicateSearchRequest request, HttpContext http, CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await PhotoDuplicateSearch.FindAsync(http.RequestServices.GetRequiredService<CoveContext>(), request, ct);
+                return Results.Ok(result);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { message = ex.Message });
+            }
+        }).RequireCovePermission("images.read");
         group.MapPost("/images/deletion-jobs", StartImageDeletionJobAsync)
             .RequireCovePermission("images.write")
             .RequireCovePermission("images.delete");

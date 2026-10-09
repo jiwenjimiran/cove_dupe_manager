@@ -4,7 +4,7 @@ import {
   ChevronRight, Columns2, Copy, Folder, Loader2, Pause, Play, RefreshCw, RotateCcw,
   Save, Search, Settings2, Trash2, X,
 } from "@cove/runtime/lucide-react";
-import { cancelDuplicateSearch, findDuplicateImages, findDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
+import { cancelDuplicateSearch, findDuplicateImages, findDuplicates, findPhotoDuplicates, loadFolders, loadSettings, loadTranscodeResolutions, mediaUrls, saveSettings } from "./api.js";
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
@@ -52,7 +52,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       const next = normalizeSettings({ ...(session.searchSettings || value), ...initialUrlSearch.settings });
       setSettings(next);
       setSettingsReady(true);
-      if (initialUrlSearch.hasSearchParams && !autoSearchStarted.current) {
+      if (next.mediaType === "videos" && initialUrlSearch.hasSearchParams && !autoSearchStarted.current) {
         autoSearchStarted.current = true;
         runSearch(next, initialUrlSearch.page, initialUrlSearch.searchId);
       }
@@ -60,7 +60,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       if (cancelled) return;
       setError(reason.message);
       setSettingsReady(true);
-      if (initialUrlSearch.hasSearchParams && !autoSearchStarted.current) {
+      if (initialSettings.mediaType === "videos" && initialUrlSearch.hasSearchParams && !autoSearchStarted.current) {
         autoSearchStarted.current = true;
         runSearch(initialSettings, initialUrlSearch.page, initialUrlSearch.searchId);
       }
@@ -275,6 +275,10 @@ export function DuplicateManagerPage({ onNavigate }) {
     setDismissedGroupKeys(new Set());
   }
 
+  if (settings.mediaType === "photos")
+    return <PhotoFinder settings={settings} updateSettings={updateSettings} settingsReady={settingsReady} autoSearch={initialUrlSearch.hasSearchParams}
+      query={query} setQuery={setQuery} page={page} setPage={setPage} />;
+
   return <div className="dm-page">
     <header className="dm-header">
       <div><div className="dm-title"><Copy size={23} /><h1>Duplicate Manager</h1></div><p>Compare, select, and remove duplicate videos in one operation.</p></div>
@@ -283,6 +287,7 @@ export function DuplicateManagerPage({ onNavigate }) {
 
     <section className="dm-controls">
       <label><span>Match type</span><select value={settings.matchType} onChange={(event) => updateSettings({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="duration">Exact duration</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>
+      <label><span>Find duplicates in</span><select value={settings.mediaType} onChange={(event) => updateSettings({ mediaType: event.target.value })}><option value="videos">Videos</option><option value="photos">Photos</option></select></label>
       {settings.matchType === "fingerprint" && <label><span>Algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => updateSettings({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5 only</option><option value="oshash">OSHash only</option></select></label>}
       {settings.matchType === "phash" && <>
         <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => updateSettings({ phashDistance: Number(event.target.value) })} /></label>
@@ -808,6 +813,102 @@ function Modal({ title, onClose, wide, children }) {
   return <div className="dm-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className={`dm-modal ${wide ? "dm-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="dm-icon-button" onClick={onClose}><X size={18} /></button></header>{children}</div></div>;
 }
 
+function PhotoFinder({ settings, updateSettings, settingsReady, autoSearch, query, setQuery, page, setPage }) {
+  const [result, setResult] = useState(null);
+  const [keepers, setKeepers] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [folderOpen, setFolderOpen] = useState(false);
+  const autoStarted = useRef(false);
+
+  async function search() {
+    setBusy(true);
+    setError("");
+    try {
+      const found = await findPhotoDuplicates(settings);
+      setResult(found);
+      setKeepers({});
+      setPage(1);
+    } catch (reason) {
+      setError(reason.message || "Photo search failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (settingsReady && autoSearch && !autoStarted.current) {
+      autoStarted.current = true;
+      search();
+    }
+  }, [settingsReady]);
+
+  const groups = (result?.groups || []).filter((group) => {
+    const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return terms.every((term) => group.images.some((image) =>
+      `${image.title || ""} ${image.file.path}`.toLowerCase().includes(term)));
+  });
+  const pages = Math.max(1, Math.ceil(groups.length / settings.pageSize));
+  const visible = groups.slice((Math.min(page, pages) - 1) * settings.pageSize, Math.min(page, pages) * settings.pageSize);
+
+  async function clean(group) {
+    const key = group.images.map((image) => image.id).join(":");
+    const keeperId = keepers[key] || group.recommendedKeeperId;
+    const keeper = group.images.find((image) => image.id === keeperId);
+    const sources = group.images.filter((image) => image.id !== keeperId).map((image) => image.id);
+    const drop = group.matchedFiles.filter((file) => file.imageId !== keeperId && !file.inArchive);
+    if (!sources.length || !window.confirm(
+      `Keep photo #${keeperId}, merge metadata from ${sources.length} duplicate photo(s), and permanently delete ${drop.length} matched file(s)?\n\nReview the photos first. This cannot be undone.`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      const cleanup = await runImageDeletionJob({
+        targetImageId: keeperId,
+        sourceImageIds: sources,
+        fileIds: drop.map((file) => file.id),
+      });
+      if (cleanup.status !== "complete")
+        throw new Error(cleanup.failed?.[0]?.message || cleanup.error || "Photo cleanup failed.");
+      await search();
+    } catch (reason) {
+      setError(reason.message || "Photo cleanup failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="dm-page">
+    <header className="dm-header"><div><div className="dm-title"><Copy size={23} /><h1>Duplicate Manager</h1></div><p>Find and review duplicate photos. Metadata is copied to the keeper during cleanup.</p></div></header>
+    <section className="dm-controls">
+      <label><span>Match type</span><select value={settings.matchType} onChange={(event) => updateSettings({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="title">Same title</option></select></label>
+      <label><span>Find duplicates in</span><select value={settings.mediaType} onChange={(event) => updateSettings({ mediaType: event.target.value })}><option value="videos">Videos</option><option value="photos">Photos</option></select></label>
+      {settings.matchType === "fingerprint" && <label><span>Algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => updateSettings({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5 only</option><option value="oshash">OSHash only</option></select></label>}
+      {settings.matchType === "phash" && <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => updateSettings({ phashDistance: Number(event.target.value) })} /></label>}
+      <FolderScopeControl settings={settings} onChange={updateSettings} onPick={() => setFolderOpen(true)} />
+      <button className="dm-primary" disabled={busy} onClick={search}>{busy ? <Loader2 className="dm-spin" size={17} /> : <Search size={17} />}{busy ? "Working" : "Find duplicates"}</button>
+    </section>
+    {error && <div className="dm-alert dm-error"><AlertTriangle size={17} />{error}</div>}
+    {result && <><div className="dm-result-toolbar"><div className="dm-search"><Search size={16} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Filter photo title or path" /></div><PageSizeControl value={settings.pageSize} onChange={(pageSize) => updateSettings({ pageSize })} /></div>
+      <div className="dm-summary"><span><strong>{groups.length}</strong> groups</span><span>Page {Math.min(page, pages)} of {pages}</span></div>
+      {groups.length === 0 && <div className="dm-empty"><Check size={44} /><h2>No duplicate photo groups</h2><p>Change the filters or run a different match.</p></div>}
+      <div className="dm-groups">{visible.map((group) => {
+        const key = group.images.map((image) => image.id).join(":");
+        const keeperId = keepers[key] || group.recommendedKeeperId;
+        const dropCount = group.matchedFiles.filter((file) => file.imageId !== keeperId && !file.inArchive).length;
+        return <section className="dm-group" key={key}>
+          <header><div><strong>{group.images.length} matching photos</strong><span>Recommended keeper: highest resolution, then smallest file</span></div><button className="dm-danger" disabled={busy} onClick={() => clean(group)}>Merge and delete {dropCount} file{dropCount === 1 ? "" : "s"}</button></header>
+          <div className="dm-video-grid">{group.images.map((image) => <article className={`dm-video-card ${keeperId === image.id ? "dm-selected" : ""}`} key={image.id}>
+            <div className="dm-media"><button className={`dm-check ${keeperId === image.id ? "dm-check-on" : ""}`} aria-label={`Keep photo ${image.id}`} onClick={() => setKeepers((current) => ({ ...current, [key]: image.id }))}>{keeperId === image.id && <Check size={14} />}</button>{keeperId === image.id && <span className="dm-keeper">Keeper</span>}<img src={`/api/stream/image/${image.id}/thumbnail?max=600`} alt={image.title || `Photo ${image.id}`} loading="lazy" /></div>
+            <div className="dm-video-info"><a className="dm-video-title" href={`/image/${image.id}`}>{image.title || image.file.path.split(/[\\/]/).pop() || `Photo #${image.id}`}</a><div className="dm-facts"><span>{image.file.width}×{image.file.height}</span><span>{formatBytes(image.file.size)}</span><span>{image.fileCount} file{image.fileCount === 1 ? "" : "s"}</span>{image.file.inArchive && <span>Archive file</span>}</div><p className="dm-file-path" title={image.file.path}>{displayPath(image.file.path)}</p></div>
+          </article>)}</div>
+        </section>;
+      })}</div>
+      {groups.length > 0 && <Pagination page={Math.min(page, pages)} totalPages={pages} onChange={setPage} />}
+    </>}
+    {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(includedPaths) => { updateSettings({ includedPaths }); setFolderOpen(false); }} />}
+  </div>;
+}
+
 export function DuplicateImagesPage() {
   const [result, setResult] = useState(null);
   const [page, setPage] = useState(1);
@@ -865,13 +966,23 @@ export function DuplicateManagerSettingsPanel() {
   const availableRules = Object.keys(RULE_LABELS).filter((rule) => !settings.keeperRules.includes(rule));
   return <div className="dm-settings">
     <div className="dm-settings-heading"><div><h3><Settings2 size={19} />Duplicate Manager</h3><p>Defaults used when the improved Duplicate Finder opens.</p></div><button className="dm-primary" disabled={saving} onClick={save}>{saving ? <Loader2 className="dm-spin" size={16} /> : <Save size={16} />}Save</button></div>
-    <div className="dm-settings-grid"><label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option><option value="duration">Exact duration</option><option value="title">Same title</option><option value="remoteid">Same remote ID</option></select></label>{settings.matchType === "fingerprint" && <label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label>}{settings.matchType === "phash" && <><label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label><label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label></>}{settings.matchType === "duration" && <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => update({ exactDurationDelta: Number(event.target.value) })} /></label>}<DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} /><PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} /></div>
-    {settings.matchType === "duration" && <label className="dm-checkbox-row"><input type="checkbox" checked={settings.compareSameFolder} onChange={(event) => update({ compareSameFolder: event.target.checked })} /><span>Compare files only at same level<small>Match files in the same immediate parent folder.</small></span></label>}
-    <section><h4>Ranking mode</h4><p>Balanced explains codec-aware quality decisions; custom uses your ordered rules.</p><select value={settings.rankingMode} onChange={(event) => update({ rankingMode: event.target.value })}><option value="balanced">Balanced quality (recommended)</option><option value="custom">Custom rule order</option></select></section>
-    <section><h4>Preferred codecs</h4><p>Used by custom ranking, best to worst.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>
+    <div className="dm-settings-grid">
+      <label><span>Default match type</span><select value={settings.matchType} onChange={(event) => update({ matchType: event.target.value })}><option value="fingerprint">Exact fingerprint</option><option value="phash">Visual pHash</option>{settings.mediaType === "videos" && <option value="duration">Exact duration</option>}<option value="title">Same title</option>{settings.mediaType === "videos" && <option value="remoteid">Same remote ID</option>}</select></label>
+      <label><span>Find duplicates in</span><select value={settings.mediaType} onChange={(event) => update({ mediaType: event.target.value })}><option value="videos">Videos</option><option value="photos">Photos</option></select></label>
+      {settings.matchType === "fingerprint" && <label><span>Exact algorithm</span><select value={settings.fingerprintAlgorithm} onChange={(event) => update({ fingerprintAlgorithm: event.target.value })}><option value="any">MD5 or OSHash</option><option value="md5">MD5</option><option value="oshash">OSHash</option></select></label>}
+      {settings.matchType === "phash" && <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label>}
+      {settings.mediaType === "videos" && settings.matchType === "phash" && <label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label>}
+      {settings.mediaType === "videos" && settings.matchType === "duration" && <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => update({ exactDurationDelta: Number(event.target.value) })} /></label>}
+      {settings.mediaType === "videos" && <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} />}
+      <PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} />
+    </div>
+    {settings.mediaType === "videos" && settings.matchType === "duration" && <label className="dm-checkbox-row"><input type="checkbox" checked={settings.compareSameFolder} onChange={(event) => update({ compareSameFolder: event.target.checked })} /><span>Compare files only at same level<small>Match files in the same immediate parent folder.</small></span></label>}
+    {settings.mediaType === "photos" && <section><h4>Photo keeper</h4><p>The recommended keeper has the highest resolution. At equal resolution, the smaller file wins. Missing metadata is copied during cleanup.</p></section>}
+    {settings.mediaType === "videos" && <section><h4>Ranking mode</h4><p>Balanced explains codec-aware quality decisions; custom uses your ordered rules.</p><select value={settings.rankingMode} onChange={(event) => update({ rankingMode: event.target.value })}><option value="balanced">Balanced quality (recommended)</option><option value="custom">Custom rule order</option></select></section>}
+    {settings.mediaType === "videos" && <section><h4>Preferred codecs</h4><p>Used by custom ranking, best to worst.</p><input value={settings.preferredCodecs.join(", ")} onChange={(event) => update({ preferredCodecs: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></section>}
     <section><h4>Default folder scope</h4><p>Search all folders, only selected folders, or everything except selected folders.</p><FolderScopeControl settings={settings} onChange={update} onPick={() => setFolderOpen(true)} settingsView /></section>
-    <section><h4>Metadata transfer</h4><p>Defaults used when confirming bulk deletion.</p><label className="dm-checkbox-row"><input type="checkbox" checked={settings.copyMissingMetadata} onChange={(event) => update({ copyMissingMetadata: event.target.checked })} /><span><strong>Copy missing metadata from deleted files</strong><small>Merge missing editable metadata, relationships, ratings, markers, and cover artwork into the keeper.</small></span></label><label className="dm-checkbox-row"><input type="checkbox" checked={settings.overwriteConflictingMetadata} disabled={!settings.copyMissingMetadata} onChange={(event) => update({ overwriteConflictingMetadata: event.target.checked })} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer metadata from deleted files when both videos have a value.</small></span></label></section>
-    {settings.rankingMode === "custom" && <section><h4>Keeper priority</h4><p>Rules are evaluated top to bottom.</p><div className="dm-rule-list">{settings.keeperRules.map((rule, index) => <div key={rule}><span>{index + 1}. {RULE_LABELS[rule]}</span><div><button className="dm-icon-button" disabled={index === 0} onClick={() => moveRule(index, -1)}><ArrowUp size={15} /></button><button className="dm-icon-button" disabled={index === settings.keeperRules.length - 1} onClick={() => moveRule(index, 1)}><ArrowDown size={15} /></button><button className="dm-icon-button" onClick={() => removeRule(index)}><X size={15} /></button></div></div>)}</div>{availableRules.length > 0 && <select value="" onChange={(event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] })}><option value="">Add tie-break rule...</option>{availableRules.map((rule) => <option key={rule} value={rule}>{RULE_LABELS[rule]}</option>)}</select>}</section>}
+    {settings.mediaType === "videos" && <section><h4>Metadata transfer</h4><p>Defaults used when confirming bulk deletion.</p><label className="dm-checkbox-row"><input type="checkbox" checked={settings.copyMissingMetadata} onChange={(event) => update({ copyMissingMetadata: event.target.checked })} /><span><strong>Copy missing metadata from deleted files</strong><small>Merge missing editable metadata, relationships, ratings, markers, and cover artwork into the keeper.</small></span></label><label className="dm-checkbox-row"><input type="checkbox" checked={settings.overwriteConflictingMetadata} disabled={!settings.copyMissingMetadata} onChange={(event) => update({ overwriteConflictingMetadata: event.target.checked })} /><span><strong>Overwrite conflicting metadata</strong><small>Prefer metadata from deleted files when both videos have a value.</small></span></label></section>}
+    {settings.mediaType === "videos" && settings.rankingMode === "custom" && <section><h4>Keeper priority</h4><p>Rules are evaluated top to bottom.</p><div className="dm-rule-list">{settings.keeperRules.map((rule, index) => <div key={rule}><span>{index + 1}. {RULE_LABELS[rule]}</span><div><button className="dm-icon-button" disabled={index === 0} onClick={() => moveRule(index, -1)}><ArrowUp size={15} /></button><button className="dm-icon-button" disabled={index === settings.keeperRules.length - 1} onClick={() => moveRule(index, 1)}><ArrowDown size={15} /></button><button className="dm-icon-button" onClick={() => removeRule(index)}><X size={15} /></button></div></div>)}</div>{availableRules.length > 0 && <select value="" onChange={(event) => event.target.value && update({ keeperRules: [...settings.keeperRules, event.target.value] })}><option value="">Add tie-break rule...</option>{availableRules.map((rule) => <option key={rule} value={rule}>{RULE_LABELS[rule]}</option>)}</select>}</section>}
     {message && <div className={`dm-alert ${message === "Settings saved." ? "dm-success" : "dm-error"}`}>{message}</div>}
     {folderOpen && <FolderDialog mode={settings.folderMode} selected={settings.includedPaths} onCancel={() => setFolderOpen(false)} onApply={(includedPaths) => { update({ includedPaths }); setFolderOpen(false); }} />}
   </div>;

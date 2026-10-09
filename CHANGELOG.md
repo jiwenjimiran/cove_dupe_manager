@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.3 - 2026-10-09
+
+- Add a Videos/Photos selector to Duplicate Finder, with Videos as the default.
+- Find duplicate photos by exact MD5/OSHash fingerprint, visual pHash distance, or title, with include/exclude folder scope.
+- Recommend the highest-resolution photo as keeper and use smaller file size to break resolution ties.
+- Merge photo metadata into the keeper during reviewed cleanup and preserve every keeper-owned file.
+
 ## 2.1.2 - 2026-10-08
 
 - Add a separate fractional-second delta to duration matching, defaulting to zero.

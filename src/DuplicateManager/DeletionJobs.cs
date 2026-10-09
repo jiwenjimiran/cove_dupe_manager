@@ -618,8 +618,52 @@ public sealed class DuplicateDeletionJobService(
             await PruneImageFilesAsync(db, request.TargetImageId, request.FileIds, ct);
     }
 
-    private static async Task MergeImageMetadataAsync(CoveContext db, int targetId, IReadOnlyCollection<int> sourceIds, CancellationToken ct)
+    internal static async Task MergeImageMetadataAsync(CoveContext db, int targetId, IReadOnlyCollection<int> sourceIds, CancellationToken ct)
     {
+        var target = await db.Images.SingleAsync(image => image.Id == targetId, ct);
+        var sources = await db.Images.Where(image => sourceIds.Contains(image.Id)).OrderBy(image => image.Id).ToListAsync(ct);
+        foreach (var source in sources)
+        {
+            target.Title = First(target.Title, source.Title);
+            target.Code = First(target.Code, source.Code);
+            target.Details = First(target.Details, source.Details);
+            target.Photographer = First(target.Photographer, source.Photographer);
+            target.StudioId ??= source.StudioId;
+            if (target.Date is null && source.Date is not null)
+            {
+                target.Date = source.Date;
+                target.DatePrecision = source.DatePrecision;
+            }
+            target.Organized |= source.Organized;
+        }
+
+        var existingFields = (await db.CustomFieldValues
+            .Where(value => value.EntityType == CustomFieldEntityTypes.Image && value.EntityId == targetId)
+            .Select(value => value.DefinitionId).ToListAsync(ct)).ToHashSet();
+        foreach (var value in await db.CustomFieldValues
+            .Where(value => value.EntityType == CustomFieldEntityTypes.Image && sourceIds.Contains(value.EntityId))
+            .OrderBy(value => value.EntityId).ThenBy(value => value.Position).ToListAsync(ct))
+        {
+            if (existingFields.Add(value.DefinitionId)) value.EntityId = targetId;
+        }
+        foreach (var segment in await db.Segments
+            .Where(segment => segment.HostType == SegmentHostType.Image && sourceIds.Contains(segment.HostId)).ToListAsync(ct))
+            segment.HostId = targetId;
+        foreach (var detection in await db.Detections
+            .Where(detection => detection.HostType == DetectionHostType.Image && sourceIds.Contains(detection.HostId)).ToListAsync(ct))
+            detection.HostId = targetId;
+        var targetGroupIds = (await db.GroupItems
+            .Where(item => item.ImageId == targetId || item.HostType == "image" && item.HostId == targetId)
+            .Select(item => item.GroupId).ToListAsync(ct)).ToHashSet();
+        foreach (var item in await db.GroupItems
+            .Where(item => item.ImageId != null && sourceIds.Contains(item.ImageId.Value)
+                || item.HostType == "image" && sourceIds.Contains(item.HostId)).ToListAsync(ct))
+        {
+            if (!targetGroupIds.Add(item.GroupId)) { db.GroupItems.Remove(item); continue; }
+            if (item.ImageId.HasValue) item.ImageId = targetId;
+            if (item.HostType == "image") item.HostId = targetId;
+        }
+
         var haveTags = (await db.Set<ImageTag>().Where(row => row.ImageId == targetId).Select(row => row.TagId).ToListAsync(ct)).ToHashSet();
         foreach (var row in await db.Set<ImageTag>().Where(row => sourceIds.Contains(row.ImageId)).ToListAsync(ct))
         {
@@ -669,9 +713,18 @@ public sealed class DuplicateDeletionJobService(
         if (drop.Any(file => file.ZipFileId != null || DuplicateManagerExtension.IsArchivePath(file.Path)))
             throw new DuplicateDeletionStageException("deletion", "Archive entries cannot be removed.");
 
-        var cleanup = PermanentFileCleanup.Delete(drop.Select(file => new FileCleanupTarget(file.Id, file.Path!, file.Size)));
-        var deletedIds = cleanup.DeletedIds.ToHashSet();
-        db.ImageFiles.RemoveRange(drop.Where(file => deletedIds.Contains(file.Id)));
+        var dropPaths = drop.Select(file => file.Path).Distinct(StringComparer.Ordinal).ToArray();
+        var retainedPaths = (await db.ImageFiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(file => !dropIds.Contains(file.Id) && dropPaths.Contains(file.Path))
+            .Select(file => file.Path).Distinct().ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+        var deleteTargets = drop.Where(file => !retainedPaths.Contains(file.Path))
+            .GroupBy(file => file.Path, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .Select(file => new FileCleanupTarget(file.Id, file.Path, file.Size)).ToArray();
+        var cleanup = PermanentFileCleanup.Delete(deleteTargets);
+        var deletedPaths = drop.Where(file => cleanup.DeletedIds.Contains(file.Id))
+            .Select(file => file.Path).ToHashSet(StringComparer.Ordinal);
+        db.ImageFiles.RemoveRange(drop.Where(file => retainedPaths.Contains(file.Path) || deletedPaths.Contains(file.Path)));
         await db.SaveChangesAsync(ct);
         if (cleanup.Failed.Count > 0)
             throw new DuplicateDeletionStageException("deletion", string.Join("; ", cleanup.Failed.Select(failure => failure.Error)));
