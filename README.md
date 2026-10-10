@@ -43,7 +43,7 @@ Duplicate Manager replaces Cove's built-in Duplicate Finder with workflows for r
 - Saved metadata-transfer defaults, including checked-by-default missing-value copying and optional conflict overwriting
 - Defaults under `Settings -> Extensions -> Installed -> Duplicate Manager`
 
-Version 2.1.6 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
+Version 2.1.7 requires Cove `1.5.1` or newer with the duplicate review migrations applied. Older Cove versions should keep using 2.0.3. Starting a deletion job uses Cove's authenticated extension API, so normal Cove video and image permissions remain in effect; the queued work then runs on Cove's server.
 
 ## Build
 
@@ -65,7 +65,7 @@ Create an installable ZIP:
 .\scripts\package.ps1
 ```
 
-The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.1.6.zip`.
+The package is written to `artifacts\io.github.jiwenjimiran.duplicate-manager-2.1.7.zip`.
 
 ## Upgrade from 1.6.0 or older
 
@@ -84,7 +84,7 @@ installation. This does not affect Cove video metadata or source files.
 
 1. Open Cove and go to `Settings -> Extensions -> Installed`.
 2. Choose **Install from URL**.
-3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.1.6.zip` from the GitHub release.
+3. Paste the direct URL for `io.github.jiwenjimiran.duplicate-manager-2.1.7.zip` from the GitHub release.
 4. Enable the extension if Cove does not enable it automatically, then reload Cove.
 5. Open Cove's existing **Duplicate Finder**. The extension replaces that page.
 

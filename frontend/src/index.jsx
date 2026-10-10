@@ -8,7 +8,7 @@ import { cancelDuplicateSearch, findDuplicateImages, findDuplicates, findPhotoDu
 import {
   DEFAULT_SETTINGS, RULE_LABELS, autoSelectForDeletion, chooseKeeper, comparisonPlayback,
   deletionProgress, duplicateSearchFromUrl, duplicateSearchToUrl, filterGroups, formatBytes,
-  displayPath, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
+  displayPath, ensureKeeperSafety, formatDuration, formatDurationInput, groupRisk, keeperReason, metadataCopyCount, metadataCount, normalizeSettings, parseDurationInput,
   parsePageSizeInput, phashComparison, photoCleanupPlan, photoGroupKey, prepareGroups, primaryFile, selectedSummary, transcodeResolutionCandidates, validateKeeperSafety,
 } from "./core.js";
 import { clearSession, getSession } from "./session.js";
@@ -185,8 +185,10 @@ export function DuplicateManagerPage({ onNavigate }) {
     if (skipHighRisk && (appliedSettings || settings).matchType === "phash")
       targetGroups = targetGroups.filter((group) => groupRisk(group).score < 10);
     const targetIds = new Set(targetGroups.flat().map((video) => video.id));
-    const recommended = autoSelectForDeletion(targetGroups, settings);
-    setSelectedIds((current) => new Set([...current].filter((id) => !targetIds.has(id)).concat([...recommended])));
+    const ranking = appliedSettings || settings;
+    const recommended = autoSelectForDeletion(targetGroups, ranking);
+    setSelectedIds((current) => ensureKeeperSafety(groups,
+      new Set([...current].filter((id) => !targetIds.has(id)).concat([...recommended])), ranking));
   }
 
   function clearSelected(targetGroups = filteredGroups) {

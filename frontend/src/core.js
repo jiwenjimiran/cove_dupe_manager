@@ -282,12 +282,10 @@ export function groupRisk(group) {
 }
 
 export function autoSelectForDeletion(groups, settings) {
-  const selected = new Set();
-  for (const group of groups || []) {
-    const keeper = chooseKeeper(group, settings);
-    for (const video of group) if (!keeper || video.id !== keeper.id) selected.add(video.id);
-  }
-  return selected;
+  // A video can occur in several duration or pHash groups. Protect every group's
+  // recommended keeper before selecting any source, so no later group selects it.
+  const keepers = new Set((groups || []).map((group) => chooseKeeper(group, settings)?.id).filter((id) => id != null));
+  return new Set(uniqueVideos((groups || []).flat()).filter((video) => !keepers.has(video.id)).map((video) => video.id));
 }
 
 export function validateKeeperSafety(groups, selectedIds) {
@@ -295,6 +293,15 @@ export function validateKeeperSafety(groups, selectedIds) {
   return (groups || [])
     .map((group, index) => ({ index, group, remaining: group.filter((video) => !selected.has(video.id)) }))
     .filter((entry) => entry.group.some((video) => selected.has(video.id)) && entry.remaining.length === 0);
+}
+
+export function ensureKeeperSafety(groups, selectedIds, settings) {
+  const selected = new Set(selectedIds);
+  for (const { group } of validateKeeperSafety(groups, selected)) {
+    const keeper = chooseKeeper(group, settings);
+    if (keeper) selected.delete(keeper.id);
+  }
+  return selected;
 }
 
 export function selectedSummary(groups, selectedIds) {

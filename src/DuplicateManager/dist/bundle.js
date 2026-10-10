@@ -309,16 +309,20 @@ function groupRisk(group) {
   return { score: Math.round((members.length - 1) * factor), notes };
 }
 function autoSelectForDeletion(groups, settings) {
-  const selected = /* @__PURE__ */ new Set();
-  for (const group of groups || []) {
-    const keeper = chooseKeeper(group, settings);
-    for (const video of group) if (!keeper || video.id !== keeper.id) selected.add(video.id);
-  }
-  return selected;
+  const keepers = new Set((groups || []).map((group) => chooseKeeper(group, settings)?.id).filter((id) => id != null));
+  return new Set(uniqueVideos((groups || []).flat()).filter((video) => !keepers.has(video.id)).map((video) => video.id));
 }
 function validateKeeperSafety(groups, selectedIds) {
   const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
   return (groups || []).map((group, index) => ({ index, group, remaining: group.filter((video) => !selected.has(video.id)) })).filter((entry) => entry.group.some((video) => selected.has(video.id)) && entry.remaining.length === 0);
+}
+function ensureKeeperSafety(groups, selectedIds, settings) {
+  const selected = new Set(selectedIds);
+  for (const { group } of validateKeeperSafety(groups, selected)) {
+    const keeper = chooseKeeper(group, settings);
+    if (keeper) selected.delete(keeper.id);
+  }
+  return selected;
 }
 function selectedSummary(groups, selectedIds) {
   const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
@@ -1273,8 +1277,13 @@ function DuplicateManagerPage({ onNavigate }) {
     if (skipHighRisk && (appliedSettings || settings).matchType === "phash")
       targetGroups = targetGroups.filter((group) => groupRisk(group).score < 10);
     const targetIds = new Set(targetGroups.flat().map((video) => video.id));
-    const recommended = autoSelectForDeletion(targetGroups, settings);
-    setSelectedIds((current) => new Set([...current].filter((id) => !targetIds.has(id)).concat([...recommended])));
+    const ranking = appliedSettings || settings;
+    const recommended = autoSelectForDeletion(targetGroups, ranking);
+    setSelectedIds((current) => ensureKeeperSafety(
+      groups,
+      new Set([...current].filter((id) => !targetIds.has(id)).concat([...recommended])),
+      ranking
+    ));
   }
   function clearSelected(targetGroups = filteredGroups) {
     if (deletionPending) return;

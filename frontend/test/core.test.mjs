@@ -10,6 +10,7 @@ import {
   displayPath,
   duplicateSearchFromUrl,
   duplicateSearchToUrl,
+  ensureKeeperSafety,
   filterGroups,
   groupRisk,
   keeperReason,
@@ -389,6 +390,28 @@ test("auto selection leaves exactly one recommended keeper per group", () => {
   assert.deepEqual([...autoSelectForDeletion(groups, { keeperRules: ["resolution"] })].sort(), [1, 3]);
   assert.deepEqual(validateKeeperSafety(groups, new Set([1, 3])), []);
   assert.equal(validateKeeperSafety(groups, new Set([1, 2, 3])).length, 1);
+});
+
+test("auto selection protects keepers shared by overlapping groups", () => {
+  const best = video(1, { width: 1920 });
+  const shared = video(2, { width: 1280 });
+  const weakest = video(3, { width: 640 });
+  const groups = [[best, shared], [shared, weakest]];
+  const selected = autoSelectForDeletion(groups, { keeperRules: ["resolution"] });
+  assert.deepEqual([...selected], [3]);
+  assert.deepEqual(validateKeeperSafety(groups, selected), []);
+});
+
+test("selecting a subset repairs safety in overlapping groups outside the subset", () => {
+  const best = video(1, { width: 1920 });
+  const shared = video(2, { width: 1280 });
+  const weakest = video(3, { width: 640 });
+  const groups = [[best, shared], [shared, weakest]];
+  const previouslySelected = new Set([weakest.id]);
+  const subset = autoSelectForDeletion([groups[0]], { keeperRules: ["resolution"] });
+  const safe = ensureKeeperSafety(groups, new Set([...previouslySelected, ...subset]), { keeperRules: ["resolution"] });
+  assert.deepEqual([...safe], [3]);
+  assert.deepEqual(validateKeeperSafety(groups, safe), []);
 });
 
 test("selection summary de-duplicates videos repeated across groups", () => {

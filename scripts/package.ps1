@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "2.1.6",
+    [string]$Version = "2.1.7",
     [switch]$NoRestore,
     [string]$CoveSourceRoot
 )

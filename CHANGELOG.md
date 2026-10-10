@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.7 - 2026-10-10
+
+- Keep every overlapping duration or pHash group's recommended keeper out of bulk deletion selections.
+- Repair keeper safety when selecting a filtered or individual group while other groups remain selected.
+
 ## 2.1.6 - 2026-10-09
 
 - Copy generated video segments to the keeper when confirmed metadata cleanup removes a video whose primary file is within one second of the keeper's primary file.
