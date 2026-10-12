@@ -125,6 +125,29 @@ internal static class SearchRegressionTests
             "Minimum title length was not persisted.");
         Console.WriteLine("Title length and bounded duration filters passed.");
 
+        await db.Database.ExecuteSqlRawAsync("UPDATE videos SET title = 'Matching title', MaxDuration = CASE WHEN id=358 THEN 60 ELSE 42 END, ImageBlobId = CASE id WHEN 351 THEN 'cover-a' WHEN 352 THEN 'cover-b' WHEN 353 THEN 'other-cover' WHEN 354 THEN 'other-cover' WHEN 356 THEN 'missing-cover' WHEN 357 THEN 'unreadable-cover' WHEN 358 THEN 'cover-a' ELSE NULL END WHERE id BETWEEN 351 AND 358");
+        var covers = new TestCoverBlobs();
+        var coverSearch = await searchService.StartAsync(null, null,
+            new DuplicateSearchStartRequest("title", DurationDiff: 0.1, MinimumTitleLength: 10, HideDifferentCovers: true), durationIds, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        Check((await db.DuplicateSearches.AsNoTracking().SingleAsync(row => row.Id == coverSearch.SearchId)).MatchType == "titleCover",
+            "Cover filter was not persisted.");
+        var coverExecution = new DuplicateSearchExecutionService(db, jobs, new CoveConfiguration(), covers);
+        await coverExecution.ExecuteAsync(coverSearch.SearchId, durationIds, new SilentProgress(), CancellationToken.None);
+        var coverGroups = await db.DuplicateSearchGroups.AsNoTracking().Where(group => group.SearchId == coverSearch.SearchId)
+            .Select(group => group.Items.Select(item => item.VideoId).OrderBy(id => id).ToArray()).ToArrayAsync();
+        Check(coverGroups.Length == 2 && coverGroups.Any(group => group.SequenceEqual([351, 352]))
+            && coverGroups.Any(group => group.SequenceEqual([353, 354])),
+            "Cover matching lost identical uploads or included different, missing, unreadable, or out-of-duration covers.");
+        Check(covers.ReadCount == 5, "Cover contents were read more than once per blob.");
+        var unfiltered = await searchService.StartAsync(null, null,
+            new DuplicateSearchStartRequest("title", DurationDiff: 0.1, MinimumTitleLength: 10), durationIds, CancellationToken.None);
+        await execution.ExecuteAsync(unfiltered.SearchId, durationIds, new SilentProgress(), CancellationToken.None);
+        var unfilteredIds = await db.DuplicateSearchItems.AsNoTracking().Where(item => item.Group!.SearchId == unfiltered.SearchId)
+            .Select(item => item.VideoId).Order().ToArrayAsync();
+        Check(unfilteredIds.SequenceEqual(Enumerable.Range(351, 7)), "Disabled cover filter changed title matches.");
+        Console.WriteLine("Optional cover-content filtering, separate uploads, missing covers and duration bounds passed.");
+
         var chunks = DuplicateSearchExecutionService.SplitOversizedGroups([Enumerable.Range(1, 1001)]);
         Check(chunks.All(chunk => chunk.Length <= 50 && chunk.Contains(1)), "Large groups did not share a protected keeper.");
         var visual = DuplicateSearchExecutionService.FindPhashGroupsForTests([
@@ -144,6 +167,22 @@ internal static class SearchRegressionTests
     }
 
     private static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
+    private sealed class TestCoverBlobs : IBlobService
+    {
+        public int ReadCount { get; private set; }
+        public Task<(Stream Stream, string ContentType)?> GetBlobAsync(string id, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            ReadCount++;
+            if (id == "unreadable-cover") throw new IOException("Unreadable cover");
+            if (id == "missing-cover") return Task.FromResult<(Stream, string)?>(null);
+            var bytes = id == "other-cover" ? new byte[] { 9, 8, 7 } : new byte[] { 1, 2, 3 };
+            return Task.FromResult<(Stream, string)?>((new MemoryStream(bytes), "image/jpeg"));
+        }
+        public Task<string> StoreBlobAsync(Stream data, string contentType, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task DeleteBlobAsync(string id, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
     private sealed class SilentProgress : IJobProgress { public void Report(double progress, string? subTask = null) { } }
     private sealed class CapturingJobs : IJobService
     {

@@ -436,10 +436,12 @@ test("core job result URLs retain their saved search identity", () => {
 });
 
 test("title filters normalize and survive search URLs", () => {
-  const settings = normalizeSettings({ matchType: "title", minimumTitleLength: 12.9, titleDurationDelta: 0.25 });
+  const settings = normalizeSettings({ matchType: "title", minimumTitleLength: 12.9, titleDurationDelta: 0.25, hideDifferentCovers: true });
   assert.equal(settings.minimumTitleLength, 12);
   const restored = duplicateSearchFromUrl(duplicateSearchToUrl("", settings));
   assert.equal(restored.settings.minimumTitleLength, "12");
   assert.equal(restored.settings.titleDurationDelta, "0.25");
+  assert.equal(restored.settings.hideDifferentCovers, true);
+  assert.equal(normalizeSettings({}).hideDifferentCovers, false);
   assert.equal(normalizeSettings({ minimumTitleLength: -1, titleDurationDelta: -1 }).minimumTitleLength, 0);
 });

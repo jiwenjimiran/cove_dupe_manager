@@ -127,13 +127,14 @@ export function DuplicateManagerPage({ onNavigate }) {
           const include = progress.includePaths || [], exclude = progress.excludePaths || [];
           const restoredType = String(progress.matchType).toLowerCase();
           searchSettings = normalizeSettings({ ...searchSettings,
-            matchType: restoredType === "durationfolder" ? "duration" : restoredType,
+            matchType: restoredType === "durationfolder" ? "duration" : restoredType === "titlecover" ? "title" : restoredType,
+            hideDifferentCovers: restoredType === "titlecover",
             compareSameFolder: restoredType === "durationfolder" ? true : restoredType === "duration" ? false : searchSettings.compareSameFolder,
             phashDistance: progress.distance,
             maxDurationDelta: restoredType === "phash" ? progress.durationDiff : searchSettings.maxDurationDelta,
             exactDurationDelta: restoredType.startsWith("duration") ? progress.durationDiff : searchSettings.exactDurationDelta,
-            minimumTitleLength: restoredType === "title" ? progress.distance : searchSettings.minimumTitleLength,
-            titleDurationDelta: restoredType === "title" ? progress.durationDiff : searchSettings.titleDurationDelta,
+            minimumTitleLength: restoredType.startsWith("title") ? progress.distance : searchSettings.minimumTitleLength,
+            titleDurationDelta: restoredType.startsWith("title") ? progress.durationDiff : searchSettings.titleDurationDelta,
             minimumDuration: progress.minimumDuration,
             folderMode: include.length ? "include" : exclude.length ? "exclude" : "all",
             includedPaths: include.length ? include : exclude,
@@ -303,6 +304,7 @@ export function DuplicateManagerPage({ onNavigate }) {
       </>}
       {settings.mediaType === "videos" && settings.matchType === "title" && <>
         <label><span>Minimum title length</span><input type="number" min="0" max="4096" step="1" value={settings.minimumTitleLength} onChange={(event) => updateSettings({ minimumTitleLength: Number(event.target.value) })} /></label>
+        <label className="dm-checkbox-row"><input type="checkbox" checked={settings.hideDifferentCovers} onChange={(event) => updateSettings({ hideDifferentCovers: event.target.checked })} /><span>Hide results with different covers<small>Require identical saved cover contents. Missing covers are excluded.</small></span></label>
         <label><span>Maximum duration delta (sec)</span><input type="number" min="0" max="86400" step="any" value={settings.titleDurationDelta} onChange={(event) => updateSettings({ titleDurationDelta: Number(event.target.value) })} /></label>
       </>}
       <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => updateSettings({ minimumDuration })} />
@@ -1048,6 +1050,7 @@ export function DuplicateManagerSettingsPanel() {
       {settings.mediaType === "videos" && settings.matchType === "duration" && <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => update({ exactDurationDelta: Number(event.target.value) })} /></label>}
       {settings.mediaType === "videos" && settings.matchType === "title" && <>
         <label><span>Minimum title length</span><input type="number" min="0" max="4096" step="1" value={settings.minimumTitleLength} onChange={(event) => update({ minimumTitleLength: Number(event.target.value) })} /></label>
+        <label className="dm-checkbox-row"><input type="checkbox" checked={settings.hideDifferentCovers} onChange={(event) => update({ hideDifferentCovers: event.target.checked })} /><span>Hide results with different covers<small>Require identical saved cover contents. Missing covers are excluded.</small></span></label>
         <label><span>Maximum duration delta (sec)</span><input type="number" min="0" max="86400" step="any" value={settings.titleDurationDelta} onChange={(event) => update({ titleDurationDelta: Number(event.target.value) })} /></label>
       </>}
       {settings.mediaType === "videos" && <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} />}

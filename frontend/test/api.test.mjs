@@ -254,7 +254,7 @@ test("background duplicate requests pass match options and scope to Cove", async
     return { ok: true, text: async () => JSON.stringify(body), status: 200 };
   };
   try {
-    await findDuplicates({ matchType: "title", folderMode: "include", includedPaths: ["/library"], minimumDuration: 30, minimumTitleLength: 12, titleDurationDelta: 0.25 });
+    await findDuplicates({ matchType: "title", folderMode: "include", includedPaths: ["/library"], minimumDuration: 30, minimumTitleLength: 12, titleDurationDelta: 0.25, hideDifferentCovers: true });
     await findDuplicates({ matchType: "remoteid", folderMode: "exclude", includedPaths: ["/trash"] });
     await findDuplicates({ matchType: "duration", exactDurationDelta: 0.1, compareSameFolder: true });
     await findDuplicates({ matchType: "duration", exactDurationDelta: 0.2, compareSameFolder: false });
@@ -264,6 +264,8 @@ test("background duplicate requests pass match options and scope to Cove", async
   assert.equal(bodies[0].minimumDuration, 30);
   assert.equal(bodies[0].minimumTitleLength, 12);
   assert.equal(bodies[0].durationDiff, 0.25);
+  assert.equal(bodies[0].hideDifferentCovers, true);
+  assert.equal(bodies[1].hideDifferentCovers, false);
   assert.equal(bodies[1].matchType, "remoteid");
   assert.deepEqual(bodies[1].excludePaths, ["/trash"]);
   assert.equal(bodies[2].durationDiff, 0.1);

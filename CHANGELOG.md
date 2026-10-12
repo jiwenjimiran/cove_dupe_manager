@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.9 - 2026-10-12
+
+- Add an optional Hide results with different covers checkbox to video Same title matching.
+- Compare saved cover contents, including separately uploaded identical covers; exclude missing or unreadable covers when enabled.
+- Save the checkbox in defaults, search links, and durable searches.
+
 ## 2.1.8 - 2026-10-12
 
 - Add minimum title length and maximum duration delta controls for video title matching.

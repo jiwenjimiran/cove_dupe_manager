@@ -7,6 +7,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   exactDurationDelta: 0,
   minimumTitleLength: 0,
   titleDurationDelta: 10,
+  hideDifferentCovers: false,
   compareSameFolder: true,
   minimumDuration: 0,
   pageSize: 25,
@@ -21,7 +22,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const SEARCH_PARAM_NAMES = Object.freeze([
-  "match", "media", "algorithm", "maxDistance", "durationDelta", "exactDelta", "titleLength", "titleDelta", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
+  "match", "media", "algorithm", "maxDistance", "durationDelta", "exactDelta", "titleLength", "titleDelta", "sameCover", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
 ]);
 
 // Keep this aligned with Cove's VideoPlayer compatibility fallback. These containers are
@@ -67,6 +68,7 @@ export function normalizeSettings(value) {
     exactDurationDelta: clampNumber(incoming.exactDurationDelta, 0, 86400, 0),
     minimumTitleLength: Math.floor(clampNumber(incoming.minimumTitleLength, 0, 4096, 0)),
     titleDurationDelta: clampNumber(incoming.titleDurationDelta, 0, 86400, 10),
+    hideDifferentCovers: incoming.hideDifferentCovers === true,
     compareSameFolder: incoming.compareSameFolder !== false,
     minimumDuration: clampNumber(incoming.minimumDuration, 0, 86400000, 0),
     pageSize: clampNumber(incoming.pageSize, 1, 10000, 25),
@@ -96,6 +98,7 @@ export function duplicateSearchFromUrl(search) {
   if (params.has("exactDelta")) patch.exactDurationDelta = params.get("exactDelta");
   if (params.has("sameFolder")) patch.compareSameFolder = params.get("sameFolder") !== "false";
   if (params.has("titleLength")) patch.minimumTitleLength = params.get("titleLength");
+  if (params.has("sameCover")) patch.hideDifferentCovers = params.get("sameCover") === "true";
   if (params.has("titleDelta")) patch.titleDurationDelta = params.get("titleDelta");
   if (params.has("minLength")) patch.minimumDuration = params.get("minLength");
   if (params.has("folderMode")) patch.folderMode = params.get("folderMode");
@@ -118,6 +121,7 @@ export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "
   params.set("exactDelta", String(normalized.exactDurationDelta));
   params.set("sameFolder", String(normalized.compareSameFolder));
   params.set("titleLength", String(normalized.minimumTitleLength));
+  params.set("sameCover", String(normalized.hideDifferentCovers));
   params.set("titleDelta", String(normalized.titleDurationDelta));
   params.set("minLength", String(normalized.minimumDuration));
   params.set("folderMode", normalized.folderMode);

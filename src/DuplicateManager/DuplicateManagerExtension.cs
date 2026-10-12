@@ -23,7 +23,7 @@ public sealed partial class DuplicateManagerExtension : IExtension, IUIExtension
 
     public string Id => ExtensionId;
     public string Name => "Duplicate Manager";
-    public string Version => "2.1.8";
+    public string Version => "2.1.9";
     public string? Description => "Safe, explainable duplicate review and cleanup for Cove videos and images.";
     public string? Author => "jiwenji";
     public string? Url => "https://github.com/jiwenjimiran/cove_dupe_manager";
@@ -130,6 +130,7 @@ public sealed class DuplicateManagerSettings
     public double MaxDurationDelta { get; set; } = 10;
     public int MinimumTitleLength { get; set; } = 0;
     public double TitleDurationDelta { get; set; } = 10;
+    public bool HideDifferentCovers { get; set; } = false;
     public double ExactDurationDelta { get; set; } = 0;
     public bool CompareSameFolder { get; set; } = true;
     public double MinimumDuration { get; set; } = 0;

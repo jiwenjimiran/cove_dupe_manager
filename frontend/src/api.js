@@ -294,6 +294,7 @@ export async function findDuplicates(options, {
     compareSameFolder: options.compareSameFolder !== false,
     minimumDuration: options.minimumDuration || 0,
     minimumTitleLength: options.minimumTitleLength || 0,
+    hideDifferentCovers: options.matchType === "title" && options.hideDifferentCovers === true,
     includePaths: options.folderMode === "include" ? options.includedPaths || [] : [],
     excludePaths: options.folderMode === "exclude" ? options.includedPaths || [] : [],
   };

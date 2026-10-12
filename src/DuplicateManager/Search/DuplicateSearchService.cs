@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Numerics;
+using System.Security.Cryptography;
 using Cove.Core.Auth;
 using Cove.Core.Common;
 using Cove.Core.Entities;
@@ -37,12 +38,14 @@ public sealed class DuplicateSearchJobService(
         var matchType = NormalizeMatchType(request.MatchType);
         if (matchType == "duration" && request.CompareSameFolder)
             matchType = "durationFolder";
+        if (matchType == "title" && request.HideDifferentCovers)
+            matchType = "titleCover";
         var search = new DuplicateSearch
         {
             OwnerKey = owner?.Key,
             MatchType = matchType,
             // Title matching uses the durable distance slot for its minimum character count.
-            Distance = matchType == "title" ? Math.Clamp(request.MinimumTitleLength, 0, DuplicateSearchMemoryBudget.MaximumFieldCharacters)
+            Distance = matchType is "title" or "titleCover" ? Math.Clamp(request.MinimumTitleLength, 0, DuplicateSearchMemoryBudget.MaximumFieldCharacters)
                 : Math.Clamp(request.Distance, 0, MaximumPHashDistance),
             DurationDifference = Math.Clamp(request.DurationDiff ?? 5, 0, 86_400),
             IncludePaths = NormalizeScopePaths(request.IncludePaths),
@@ -162,7 +165,7 @@ public sealed class DuplicateSearchJobService(
     private static string DescribeMatchType(string matchType) => matchType switch
     {
         "phash" => "visual similarity",
-        "title" => "title",
+        "title" or "titleCover" => "title",
         "duration" => "duration",
         "durationFolder" => "duration in the same folder",
         "remoteId" => "remote ID",
@@ -174,7 +177,8 @@ public sealed class DuplicateSearchJobService(
 public sealed class DuplicateSearchExecutionService(
     CoveContext db,
     IJobService jobService,
-    CoveConfiguration config)
+    CoveConfiguration config,
+    IBlobService? blobService = null)
 {
     private const int QueryChunkSize = 4_000;
     private const int PersistGroupBatchSize = 250;
@@ -252,6 +256,7 @@ public sealed class DuplicateSearchExecutionService(
                     groups = await FindPhashGroupsAsync(ids, search.Distance, search.DurationDifference, ignored, memoryBudget, progress, ct);
                     break;
                 case "title":
+                case "titleCover":
                     progress.Report(0.1, "Comparing video titles");
                     groups = await FindTitleGroupsAsync(ids, search, ignored, memoryBudget, ct);
                     break;
@@ -409,31 +414,63 @@ public sealed class DuplicateSearchExecutionService(
         {
             var query = db.Videos
                 .Where(video => chunk.Contains(video.Id) && video.Title != null && video.Title != "")
-                .Select(video => new { SourceId = video.Id, VideoId = video.Id, Duration = video.MaxDuration, Title = video.Title!.Length > DuplicateSearchMemoryBudget.MaximumFieldCharacters ? video.Title!.Substring(0, DuplicateSearchMemoryBudget.MaximumFieldCharacters + 1) : video.Title! })
+                .Select(video => new { SourceId = video.Id, VideoId = video.Id, Duration = video.MaxDuration, CoverId = video.ImageBlobId, Title = video.Title!.Length > DuplicateSearchMemoryBudget.MaximumFieldCharacters ? video.Title!.Substring(0, DuplicateSearchMemoryBudget.MaximumFieldCharacters + 1) : video.Title! })
                 .AsNoTracking();
             await foreach (var row in ReadCandidatePagesAsync(query, row => row.SourceId, memoryBudget,
-                row => (row.Title.Length, row.Title.Length), false, ct))
-                rows.Add(new DuplicateTitleCandidate(row.VideoId, row.Title, row.Duration));
+                row => (row.Title.Length + (row.CoverId?.Length ?? 0), Math.Max(row.Title.Length, row.CoverId?.Length ?? 0)), false, ct))
+                rows.Add(new DuplicateTitleCandidate(row.VideoId, row.Title, row.Duration, row.CoverId));
         }
 
+        var titleBuckets = rows.GroupBy(row => NormalizeTitle(row.Title), StringComparer.OrdinalIgnoreCase)
+            .Where(bucket => bucket.Key.Length > 0 && bucket.Key.Length >= search.Distance && bucket.Count() > 1);
         var groups = new List<List<int>>();
-        foreach (var bucket in rows.GroupBy(row => NormalizeTitle(row.Title), StringComparer.OrdinalIgnoreCase)
-            .Where(bucket => bucket.Key.Length > 0 && bucket.Key.Length >= search.Distance))
+        var coverHashes = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var titleBucket in titleBuckets)
         {
-            var sorted = bucket.Where(row => double.IsFinite(row.Duration) && row.Duration > 0)
-                .OrderBy(row => row.Duration).ThenBy(row => row.VideoId).ToArray();
-            for (var start = 0; start < sorted.Length;)
+            IEnumerable<IEnumerable<DuplicateTitleCandidate>> buckets = [titleBucket];
+            if (search.MatchType == "titleCover")
             {
-                ct.ThrowIfCancellationRequested();
-                var end = start + 1;
-                while (end < sorted.Length && sorted[end].Duration - sorted[start].Duration <= search.DurationDifference + 1e-9)
-                    end++;
-                if (end - start > 1)
-                    groups.AddRange(GroupBuckets([sorted[start..end].Select(row => row.VideoId)], ignored, memoryBudget));
-                start = end;
+                if (blobService is null)
+                    throw new InvalidOperationException("Cover comparison requires Cove's blob service.");
+                foreach (var coverId in titleBucket.Select(row => row.CoverId).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (coverHashes.ContainsKey(coverId!)) continue;
+                    coverHashes[coverId!] = await ReadCoverHashAsync(blobService, coverId!, ct);
+                }
+                buckets = titleBucket.Where(row => row.CoverId is not null && coverHashes.GetValueOrDefault(row.CoverId) is not null)
+                    .GroupBy(row => coverHashes[row.CoverId!]).Where(bucket => bucket.Count() > 1);
+            }
+            foreach (var bucket in buckets)
+            {
+                var sorted = bucket.Where(row => double.IsFinite(row.Duration) && row.Duration > 0)
+                    .OrderBy(row => row.Duration).ThenBy(row => row.VideoId).ToArray();
+                for (var start = 0; start < sorted.Length;)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var end = start + 1;
+                    while (end < sorted.Length && sorted[end].Duration - sorted[start].Duration <= search.DurationDifference + 1e-9)
+                        end++;
+                    if (end - start > 1)
+                        groups.AddRange(GroupBuckets([sorted[start..end].Select(row => row.VideoId)], ignored, memoryBudget));
+                    start = end;
+                }
             }
         }
         return groups.OrderBy(group => group[0]).ToList();
+    }
+
+    private static async Task<string?> ReadCoverHashAsync(IBlobService blobs, string coverId, CancellationToken ct)
+    {
+        try
+        {
+            var blob = await blobs.GetBlobAsync(coverId, ct);
+            if (blob is null) return null;
+            await using var stream = blob.Value.Stream;
+            return Convert.ToHexString(await SHA256.HashDataAsync(stream, ct));
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     private async Task<List<List<int>>> FindDurationGroupsAsync(
@@ -1157,7 +1194,7 @@ public sealed class DuplicateSearchExecutionService(
     }
 
     private sealed record DuplicateFingerprintCandidate(int VideoId, string Type, string Value);
-    private sealed record DuplicateTitleCandidate(int VideoId, string Title, double Duration);
+    private sealed record DuplicateTitleCandidate(int VideoId, string Title, double Duration, string? CoverId);
     private sealed record DuplicateRemoteIdCandidate(int VideoId, string Endpoint, string RemoteId);
     private sealed record BoundedDuplicateGroup(int[] VideoIds, DuplicateKeeperChoice Choice);
     private sealed record DuplicateFileGroup(int VideoId, int[] FileIds);
