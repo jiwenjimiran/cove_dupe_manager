@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.8 - 2026-10-12
+
+- Add minimum title length and maximum duration delta controls for video title matching.
+- Persist title filters in saved defaults and search links; bound each group by its full duration span.
+- Exclude unknown video durations from duration-constrained title matches.
+
 ## 2.1.7 - 2026-10-10
 
 - Keep every overlapping duration or pHash group's recommended keeper out of bulk deletion selections.

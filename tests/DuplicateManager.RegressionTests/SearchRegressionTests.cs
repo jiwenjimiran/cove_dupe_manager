@@ -40,6 +40,7 @@ internal static class SearchRegressionTests
             + "INSERT INTO videos (" + string.Join(",", columns.Select(Quote)) + ") SELECT "
             + string.Join(",", expressions) + " FROM seq CROSS JOIN videos template WHERE template.id=1";
         await populate.ExecuteNonQueryAsync();
+        await db.Database.ExecuteSqlRawAsync("UPDATE videos SET MaxDuration = 60");
         db.ChangeTracker.Clear();
         var jobs = new CapturingJobs();
         var queued = await new DuplicateSearchJobService(db, jobs, null!).StartAsync(
@@ -111,6 +112,18 @@ internal static class SearchRegressionTests
             && allFolderGroups.Any(group => group.SequenceEqual([355, 356])),
             "Unrestricted duration search did not compare files across folders.");
         Console.WriteLine("Duration delta, immediate-folder scope and multi-file isolation passed.");
+
+        await db.Database.ExecuteSqlRawAsync("UPDATE videos SET title = CASE WHEN id IN (351,352,353) THEN '  Matching   title  ' ELSE 'x' END, MaxDuration = CASE id WHEN 351 THEN 42 WHEN 352 THEN 42.05 WHEN 353 THEN 42.2 WHEN 354 THEN 42 WHEN 355 THEN 42 ELSE 0 END WHERE id BETWEEN 351 AND 358");
+        var titleSearch = await searchService.StartAsync(null, null,
+            new DuplicateSearchStartRequest("title", DurationDiff: 0.1, MinimumTitleLength: 10), durationIds, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        await execution.ExecuteAsync(titleSearch.SearchId, durationIds, new SilentProgress(), CancellationToken.None);
+        var titleMatches = await db.DuplicateSearchItems.AsNoTracking()
+            .Where(item => item.Group!.SearchId == titleSearch.SearchId).Select(item => item.VideoId).Order().ToArrayAsync();
+        Check(titleMatches.SequenceEqual([351, 352]), "Title filters failed to reject short titles, missing durations, or duration chains.");
+        Check((await db.DuplicateSearches.AsNoTracking().SingleAsync(row => row.Id == titleSearch.SearchId)).Distance == 10,
+            "Minimum title length was not persisted.");
+        Console.WriteLine("Title length and bounded duration filters passed.");
 
         var chunks = DuplicateSearchExecutionService.SplitOversizedGroups([Enumerable.Range(1, 1001)]);
         Check(chunks.All(chunk => chunk.Length <= 50 && chunk.Contains(1)), "Large groups did not share a protected keeper.");

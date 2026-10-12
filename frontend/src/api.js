@@ -290,9 +290,10 @@ export async function findDuplicates(options, {
   const body = {
     matchType: options.matchType,
     distance: options.matchType === "phash" ? options.phashDistance : 0,
-    durationDiff: options.matchType === "duration" ? options.exactDurationDelta ?? 0 : options.maxDurationDelta,
+    durationDiff: options.matchType === "duration" ? options.exactDurationDelta ?? 0 : options.matchType === "title" ? options.titleDurationDelta ?? 10 : options.maxDurationDelta,
     compareSameFolder: options.compareSameFolder !== false,
     minimumDuration: options.minimumDuration || 0,
+    minimumTitleLength: options.minimumTitleLength || 0,
     includePaths: options.folderMode === "include" ? options.includedPaths || [] : [],
     excludePaths: options.folderMode === "exclude" ? options.includedPaths || [] : [],
   };

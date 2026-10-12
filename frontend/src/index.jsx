@@ -132,6 +132,8 @@ export function DuplicateManagerPage({ onNavigate }) {
             phashDistance: progress.distance,
             maxDurationDelta: restoredType === "phash" ? progress.durationDiff : searchSettings.maxDurationDelta,
             exactDurationDelta: restoredType.startsWith("duration") ? progress.durationDiff : searchSettings.exactDurationDelta,
+            minimumTitleLength: restoredType === "title" ? progress.distance : searchSettings.minimumTitleLength,
+            titleDurationDelta: restoredType === "title" ? progress.durationDiff : searchSettings.titleDurationDelta,
             minimumDuration: progress.minimumDuration,
             folderMode: include.length ? "include" : exclude.length ? "exclude" : "all",
             includedPaths: include.length ? include : exclude,
@@ -298,6 +300,10 @@ export function DuplicateManagerPage({ onNavigate }) {
       {settings.matchType === "duration" && <>
         <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => updateSettings({ exactDurationDelta: Number(event.target.value) })} /></label>
         <label className="dm-checkbox-row dm-folder-match"><input type="checkbox" checked={settings.compareSameFolder} onChange={(event) => updateSettings({ compareSameFolder: event.target.checked })} /><span>Compare files only at same level<small>Match files in the same immediate parent folder.</small></span></label>
+      </>}
+      {settings.mediaType === "videos" && settings.matchType === "title" && <>
+        <label><span>Minimum title length</span><input type="number" min="0" max="4096" step="1" value={settings.minimumTitleLength} onChange={(event) => updateSettings({ minimumTitleLength: Number(event.target.value) })} /></label>
+        <label><span>Maximum duration delta (sec)</span><input type="number" min="0" max="86400" step="any" value={settings.titleDurationDelta} onChange={(event) => updateSettings({ titleDurationDelta: Number(event.target.value) })} /></label>
       </>}
       <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => updateSettings({ minimumDuration })} />
       <FolderScopeControl settings={settings} onChange={updateSettings} onPick={() => setFolderOpen(true)} />
@@ -1040,6 +1046,10 @@ export function DuplicateManagerSettingsPanel() {
       {settings.matchType === "phash" && <label><span>Maximum pHash distance</span><input type="number" min="0" max="64" value={settings.phashDistance} onChange={(event) => update({ phashDistance: Number(event.target.value) })} /></label>}
       {settings.mediaType === "videos" && settings.matchType === "phash" && <label><span>Duration delta</span><input type="number" min="0" value={settings.maxDurationDelta} onChange={(event) => update({ maxDurationDelta: Number(event.target.value) })} /></label>}
       {settings.mediaType === "videos" && settings.matchType === "duration" && <label><span>Duration delta (sec)</span><input type="number" min="0" step="any" value={settings.exactDurationDelta} onChange={(event) => update({ exactDurationDelta: Number(event.target.value) })} /></label>}
+      {settings.mediaType === "videos" && settings.matchType === "title" && <>
+        <label><span>Minimum title length</span><input type="number" min="0" max="4096" step="1" value={settings.minimumTitleLength} onChange={(event) => update({ minimumTitleLength: Number(event.target.value) })} /></label>
+        <label><span>Maximum duration delta (sec)</span><input type="number" min="0" max="86400" step="any" value={settings.titleDurationDelta} onChange={(event) => update({ titleDurationDelta: Number(event.target.value) })} /></label>
+      </>}
       {settings.mediaType === "videos" && <DurationInput label="Minimum length" value={settings.minimumDuration} onChange={(minimumDuration) => update({ minimumDuration })} />}
       <PageSizeControl settingsLabel value={settings.pageSize} onChange={(pageSize) => update({ pageSize })} />
     </div>

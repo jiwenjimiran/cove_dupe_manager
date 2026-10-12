@@ -41,7 +41,9 @@ public sealed class DuplicateSearchJobService(
         {
             OwnerKey = owner?.Key,
             MatchType = matchType,
-            Distance = Math.Clamp(request.Distance, 0, MaximumPHashDistance),
+            // Title matching uses the durable distance slot for its minimum character count.
+            Distance = matchType == "title" ? Math.Clamp(request.MinimumTitleLength, 0, DuplicateSearchMemoryBudget.MaximumFieldCharacters)
+                : Math.Clamp(request.Distance, 0, MaximumPHashDistance),
             DurationDifference = Math.Clamp(request.DurationDiff ?? 5, 0, 86_400),
             IncludePaths = NormalizeScopePaths(request.IncludePaths),
             ExcludePaths = NormalizeScopePaths(request.ExcludePaths),
@@ -251,7 +253,7 @@ public sealed class DuplicateSearchExecutionService(
                     break;
                 case "title":
                     progress.Report(0.1, "Comparing video titles");
-                    groups = await FindTitleGroupsAsync(ids, ignored, memoryBudget, ct);
+                    groups = await FindTitleGroupsAsync(ids, search, ignored, memoryBudget, ct);
                     break;
                 case "duration":
                 case "durationFolder":
@@ -397,6 +399,7 @@ public sealed class DuplicateSearchExecutionService(
 
     private async Task<List<List<int>>> FindTitleGroupsAsync(
         int[] candidateVideoIds,
+        DuplicateSearch search,
         HashSet<(int Low, int High)> ignored,
         DuplicateSearchMemoryBudget memoryBudget,
         CancellationToken ct)
@@ -406,19 +409,31 @@ public sealed class DuplicateSearchExecutionService(
         {
             var query = db.Videos
                 .Where(video => chunk.Contains(video.Id) && video.Title != null && video.Title != "")
-                .Select(video => new { SourceId = video.Id, VideoId = video.Id, Title = video.Title!.Length > DuplicateSearchMemoryBudget.MaximumFieldCharacters ? video.Title!.Substring(0, DuplicateSearchMemoryBudget.MaximumFieldCharacters + 1) : video.Title! })
+                .Select(video => new { SourceId = video.Id, VideoId = video.Id, Duration = video.MaxDuration, Title = video.Title!.Length > DuplicateSearchMemoryBudget.MaximumFieldCharacters ? video.Title!.Substring(0, DuplicateSearchMemoryBudget.MaximumFieldCharacters + 1) : video.Title! })
                 .AsNoTracking();
             await foreach (var row in ReadCandidatePagesAsync(query, row => row.SourceId, memoryBudget,
                 row => (row.Title.Length, row.Title.Length), false, ct))
-                rows.Add(new DuplicateTitleCandidate(row.VideoId, row.Title));
+                rows.Add(new DuplicateTitleCandidate(row.VideoId, row.Title, row.Duration));
         }
 
-        return GroupBuckets(
-            rows.GroupBy(row => NormalizeTitle(row.Title), StringComparer.OrdinalIgnoreCase)
-                .Where(bucket => bucket.Key.Length > 0)
-                .Select(bucket => bucket.Select(row => row.VideoId)),
-            ignored,
-            memoryBudget);
+        var groups = new List<List<int>>();
+        foreach (var bucket in rows.GroupBy(row => NormalizeTitle(row.Title), StringComparer.OrdinalIgnoreCase)
+            .Where(bucket => bucket.Key.Length > 0 && bucket.Key.Length >= search.Distance))
+        {
+            var sorted = bucket.Where(row => double.IsFinite(row.Duration) && row.Duration > 0)
+                .OrderBy(row => row.Duration).ThenBy(row => row.VideoId).ToArray();
+            for (var start = 0; start < sorted.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                var end = start + 1;
+                while (end < sorted.Length && sorted[end].Duration - sorted[start].Duration <= search.DurationDifference + 1e-9)
+                    end++;
+                if (end - start > 1)
+                    groups.AddRange(GroupBuckets([sorted[start..end].Select(row => row.VideoId)], ignored, memoryBudget));
+                start = end;
+            }
+        }
+        return groups.OrderBy(group => group[0]).ToList();
     }
 
     private async Task<List<List<int>>> FindDurationGroupsAsync(
@@ -1142,7 +1157,7 @@ public sealed class DuplicateSearchExecutionService(
     }
 
     private sealed record DuplicateFingerprintCandidate(int VideoId, string Type, string Value);
-    private sealed record DuplicateTitleCandidate(int VideoId, string Title);
+    private sealed record DuplicateTitleCandidate(int VideoId, string Title, double Duration);
     private sealed record DuplicateRemoteIdCandidate(int VideoId, string Endpoint, string RemoteId);
     private sealed record BoundedDuplicateGroup(int[] VideoIds, DuplicateKeeperChoice Choice);
     private sealed record DuplicateFileGroup(int VideoId, int[] FileIds);

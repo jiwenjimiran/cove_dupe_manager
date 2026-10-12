@@ -5,6 +5,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   phashDistance: 8,
   maxDurationDelta: 10,
   exactDurationDelta: 0,
+  minimumTitleLength: 0,
+  titleDurationDelta: 10,
   compareSameFolder: true,
   minimumDuration: 0,
   pageSize: 25,
@@ -19,7 +21,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const SEARCH_PARAM_NAMES = Object.freeze([
-  "match", "media", "algorithm", "maxDistance", "durationDelta", "exactDelta", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
+  "match", "media", "algorithm", "maxDistance", "durationDelta", "exactDelta", "titleLength", "titleDelta", "sameFolder", "minLength", "folderMode", "folder", "groups", "page", "query",
 ]);
 
 // Keep this aligned with Cove's VideoPlayer compatibility fallback. These containers are
@@ -63,6 +65,8 @@ export function normalizeSettings(value) {
     phashDistance: clampNumber(incoming.phashDistance, 0, 64, 8),
     maxDurationDelta: clampNumber(incoming.maxDurationDelta, 0, 86400, 10),
     exactDurationDelta: clampNumber(incoming.exactDurationDelta, 0, 86400, 0),
+    minimumTitleLength: Math.floor(clampNumber(incoming.minimumTitleLength, 0, 4096, 0)),
+    titleDurationDelta: clampNumber(incoming.titleDurationDelta, 0, 86400, 10),
     compareSameFolder: incoming.compareSameFolder !== false,
     minimumDuration: clampNumber(incoming.minimumDuration, 0, 86400000, 0),
     pageSize: clampNumber(incoming.pageSize, 1, 10000, 25),
@@ -91,6 +95,8 @@ export function duplicateSearchFromUrl(search) {
   if (params.has("durationDelta")) patch.maxDurationDelta = params.get("durationDelta");
   if (params.has("exactDelta")) patch.exactDurationDelta = params.get("exactDelta");
   if (params.has("sameFolder")) patch.compareSameFolder = params.get("sameFolder") !== "false";
+  if (params.has("titleLength")) patch.minimumTitleLength = params.get("titleLength");
+  if (params.has("titleDelta")) patch.titleDurationDelta = params.get("titleDelta");
   if (params.has("minLength")) patch.minimumDuration = params.get("minLength");
   if (params.has("folderMode")) patch.folderMode = params.get("folderMode");
   if (params.has("folder")) patch.includedPaths = params.getAll("folder");
@@ -111,6 +117,8 @@ export function duplicateSearchToUrl(search, settings, page = 1, filterQuery = "
   params.set("durationDelta", String(normalized.maxDurationDelta));
   params.set("exactDelta", String(normalized.exactDurationDelta));
   params.set("sameFolder", String(normalized.compareSameFolder));
+  params.set("titleLength", String(normalized.minimumTitleLength));
+  params.set("titleDelta", String(normalized.titleDurationDelta));
   params.set("minLength", String(normalized.minimumDuration));
   params.set("folderMode", normalized.folderMode);
   for (const path of normalized.includedPaths) params.append("folder", path);
@@ -158,9 +166,9 @@ export function transcodeResolutionCandidates(values) {
 
 export function prepareGroups(apiGroups, options) {
   const settings = normalizeSettings(options);
-  // Duration candidates are scoped and partitioned by the server's file-level rules.
-  // Re-merging overlapping video IDs here could cross an immediate folder boundary.
-  if (settings.matchType === "duration")
+  // Duration and title candidates are scoped and partitioned by the server.
+  // Preserve its duration bounds and folder boundaries.
+  if (["duration", "title"].includes(settings.matchType))
     return (apiGroups || []).map(uniqueVideos).filter((group) => group.length > 1);
   const paths = settings.includedPaths.map(normalizePath).filter(Boolean);
   const scoped = (apiGroups || [])
